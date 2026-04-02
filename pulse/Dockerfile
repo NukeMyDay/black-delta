@@ -13,6 +13,6 @@ COPY . .
 # Ensure data/logs dirs exist
 RUN mkdir -p logs data
 
-EXPOSE 3000
+EXPOSE 8888
 
-CMD ["python", "dashboard.py"]
+CMD ["python", "dashboard.py", "--port", "8888"]

@@ -3,9 +3,13 @@ services:
     build: .
     container_name: pulse-bot
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "8888:8888"
     env_file:
       - .env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
