@@ -551,13 +551,12 @@
           <th>Real Prob.</th>
           <th>Market</th>
           <th>Edge</th>
-          <th>EV/Dollar</th>
           <th>Order</th>
           <th>Status</th>
         </tr>
       </thead>
       <tbody id="contracts-body">
-        <tr><td colspan="10" style="color:var(--text-dim); text-align:center; padding:20px">No active bets</td></tr>
+        <tr><td colspan="9" style="color:var(--text-dim); text-align:center; padding:20px">No active bets</td></tr>
       </tbody>
     </table>
     <div id="contract-note" style="font-size:11px; color:var(--text-dim); margin-top:6px; padding:0 2px;"></div>
@@ -579,7 +578,7 @@
   </div>
   <table class="trade-table">
     <thead>
-      <tr><th>Time</th><th>Contract</th><th>Direction</th><th>Order</th><th>BTC</th><th>Target</th><th>Edge</th><th>EV/Dollar</th><th>Sigma</th><th>Outcome</th><th>P&L</th></tr>
+      <tr><th>Time</th><th>Direction</th><th>Price</th><th>Payout</th><th>Sigma</th><th>Real Prob.</th><th>Market</th><th>Edge</th><th>Order</th><th>Outcome</th><th>P&L</th></tr>
     </thead>
     <tbody id="trade-history"></tbody>
   </table>
@@ -755,7 +754,7 @@ function updateInterval(data) {
     distWrap.innerHTML = '';
     metricsRow.style.display = 'none';
     conclusionRow.style.display = 'none';
-    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">No active bets</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="color:var(--text-dim);text-align:center;padding:20px">No active bets</td></tr>';
     noteEl.textContent = '';
     return;
   }
@@ -804,7 +803,7 @@ function updateInterval(data) {
     t.bet_placed && t.outcome === 'pending' && t.event_slug === currentSlug);
 
   if (activeBets.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">No active bets</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="color:var(--text-dim);text-align:center;padding:20px">No active bets</td></tr>';
     noteEl.textContent = '';
   } else {
     tbody.innerHTML = activeBets.map(t => {
@@ -814,7 +813,6 @@ function updateInterval(data) {
       const ec = t.edge > 0 ? 'var(--green)' : 'var(--red)';
       const ot = t.order_type === 'maker' ? 'Limit' : t.order_type === 'taker' ? 'Market' : '-';
       const oc = t.order_type === 'maker' ? 'pill-maker' : 'pill-taker';
-      const ev = t.ev_per_dollar || 0;
       const pm = t.payout_multiplier || (t.contract_price > 0 ? (1 / t.contract_price) : 0);
       return `<tr>
         <td><span class="pill ${dp}">${t.direction.toUpperCase()}</span></td>
@@ -824,7 +822,6 @@ function updateInterval(data) {
         <td>${(t.real_prob * 100).toFixed(2)}%</td>
         <td>${(t.implied_prob * 100).toFixed(2)}%</td>
         <td class="${t.edge > 0 ? 'positive' : 'negative'}">${ep}% <span class="edge-bar"><span class="edge-bar-fill" style="width:${ew}%;background:${ec}"></span></span></td>
-        <td class="${ev > 0 ? 'positive' : 'negative'}">$${ev > 0 ? '+' : ''}${ev.toFixed(4)}</td>
         <td><span class="pill ${oc}">${ot}</span></td>
         <td><span class="pill" style="background:rgba(250,204,21,0.1);color:#facc15;border-color:rgba(250,204,21,0.3)">ACTIVE</span></td>
       </tr>`;
@@ -905,16 +902,20 @@ function updateTradeHistory(data) {
   tbody.innerHTML = visible.map(t => {
     const time = t.time ? new Date(t.time).toLocaleTimeString('en-US') : '-';
     const pnl = t.pnl_usd || 0;
+    const pm = t.payout_multiplier || (t.contract_price > 0 ? (1 / t.contract_price) : 0);
+    const ep = ((t.edge||0)*100).toFixed(2);
+    const ew = Math.min(Math.abs(t.edge||0) * 500, 100);
+    const ec = (t.edge||0) > 0 ? 'var(--green)' : 'var(--red)';
     return `<tr>
       <td>${time}</td>
-      <td style="font-size:10px;font-family:'JetBrains Mono',monospace">${t.event_slug || '-'}</td>
       <td><span class="pill pill-${t.direction === 'up' ? 'up' : 'down'}">${(t.direction||'').toUpperCase()}</span></td>
-      <td><span class="pill pill-${t.order_type === 'maker' ? 'maker' : 'taker'}">${(t.order_type||'').toUpperCase()}</span></td>
-      <td>$${(t.btc_price||0).toLocaleString('en-US')}</td>
-      <td>$${(t.target_price||0).toLocaleString('en-US')}</td>
-      <td class="${t.edge > 0 ? 'positive' : 'negative'}">${((t.edge||0)*100).toFixed(2)}%</td>
-      <td class="${t.ev_per_dollar > 0 ? 'positive' : 'negative'}">$${(t.ev_per_dollar||0).toFixed(4)}</td>
+      <td class="mono">$${(t.contract_price||0).toFixed(2)}</td>
+      <td>${pm.toFixed(1)}x</td>
       <td>${(t.sigma_move||0).toFixed(2)}</td>
+      <td>${((t.real_prob||0)*100).toFixed(2)}%</td>
+      <td>${((t.implied_prob||0)*100).toFixed(2)}%</td>
+      <td class="${(t.edge||0) > 0 ? 'positive' : 'negative'}">${ep}% <span class="edge-bar"><span class="edge-bar-fill" style="width:${ew}%;background:${ec}"></span></span></td>
+      <td><span class="pill pill-${t.order_type === 'maker' ? 'maker' : 'taker'}">${(t.order_type||'').toUpperCase()}</span></td>
       <td>${(() => {
         if (t.outcome === 'win') return '<span class="pill pill-win">WIN</span>';
         if (t.outcome === 'lose') return '<span class="pill pill-lose">LOSE</span>';
