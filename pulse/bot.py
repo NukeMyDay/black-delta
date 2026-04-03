@@ -40,7 +40,7 @@ load_dotenv()
 
 # Configuration from env
 STAKE_USD = float(os.getenv("PULSE_STAKE_USD", "5"))
-MIN_EDGE = float(os.getenv("PULSE_MIN_EDGE", "0.02"))
+MIN_EDGE = float(os.getenv("PULSE_MIN_EDGE", "0.08"))
 VOL_WINDOW = int(os.getenv("PULSE_VOLATILITY_WINDOW", "300"))
 STUDENT_T_DF = float(os.getenv("PULSE_STUDENT_T_DF", "4"))
 
@@ -248,6 +248,17 @@ def analyze_market(formula: PulseFormula, btc_feed: BTCFeed,
     # Apply minimum edge filter
     if best["edge"] < MIN_EDGE:
         best["should_bet"] = False
+
+    # Filter: skip if sigma > 0 (price moving against our bet direction)
+    if best.get("sigma_move", 0) > 0 and best["should_bet"]:
+        best["should_bet"] = False
+        best["reason"] = "Sigma > 0: price moving against direction"
+
+    # Filter: skip DOWN bets at sigma ≈ 0 (BTC has upward drift at target)
+    if (direction == "down" and abs(best.get("sigma_move", 0)) < 0.05
+            and best["should_bet"]):
+        best["should_bet"] = False
+        best["reason"] = "DOWN at sigma~0: upward drift bias"
 
     # Determine order strategy (maker vs taker vs skip)
     strategy = determine_order_strategy(best, time_left)

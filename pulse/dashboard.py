@@ -38,7 +38,7 @@ from src.logger import log_trade
 load_dotenv()
 
 STAKE_USD = float(os.getenv("PULSE_STAKE_USD", "5"))
-MIN_EDGE = float(os.getenv("PULSE_MIN_EDGE", "0.02"))
+MIN_EDGE = float(os.getenv("PULSE_MIN_EDGE", "0.08"))
 VOL_WINDOW = int(os.getenv("PULSE_VOLATILITY_WINDOW", "300"))
 STUDENT_T_DF = float(os.getenv("PULSE_STUDENT_T_DF", "4"))
 TAKER_SWITCH_SECONDS = 30
@@ -131,6 +131,17 @@ def analyze_and_update(formula: PulseFormula, btc_feed: BTCFeed, slug: str):
     if best["edge"] < MIN_EDGE:
         best["should_bet"] = False
 
+    # Filter: skip if sigma > 0 (price moving against our bet direction)
+    if best.get("sigma_move", 0) > 0 and best["should_bet"]:
+        best["should_bet"] = False
+        best["reason"] = "Sigma > 0: price moving against direction"
+
+    # Filter: skip DOWN bets at sigma ≈ 0 (BTC has upward drift at target)
+    if (direction == "down" and abs(best.get("sigma_move", 0)) < 0.05
+            and best["should_bet"]):
+        best["should_bet"] = False
+        best["reason"] = "DOWN at sigma~0: upward drift bias"
+
     # Determine order type
     if best["should_bet"]:
         if time_left <= TAKER_SWITCH_SECONDS:
@@ -220,6 +231,39 @@ def resolve_previous_window(btc_feed: BTCFeed, slug: str):
                 state.resolve_trade(prev_slug, outcome, close_price)
 
 
+def resolve_all_pending(btc_feed: BTCFeed):
+    """Sweep ALL pending trades and try to resolve them (retry for API failures)."""
+    now = time.time()
+    pending = [t for t in state.trades
+               if t.get("outcome") == "pending" and t.get("bet_placed")]
+
+    for trade in pending:
+        slug = trade.get("event_slug")
+        if not slug:
+            continue
+        try:
+            window_start_ts = int(slug.split("-")[-1])
+            window_end_ts = window_start_ts + 300
+
+            # Only resolve if window has fully closed (10s buffer)
+            if now < window_end_ts + 10:
+                continue
+
+            open_price = btc_feed.fetch_price_at_time(window_start_ts * 1000)
+            close_price = btc_feed.fetch_price_at_time(window_end_ts * 1000)
+
+            if open_price and close_price:
+                direction = trade.get("direction")
+                if direction == "down":
+                    won = close_price < open_price
+                else:
+                    won = close_price >= open_price
+                outcome = "win" if won else "lose"
+                state.resolve_trade(slug, outcome, close_price)
+        except (ValueError, IndexError):
+            continue
+
+
 ANALYZE_INTERVAL = 1  # re-analyze every N seconds
 
 
@@ -241,6 +285,7 @@ def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
 
     last_slug = None
     last_analyze_time = 0
+    last_sweep_time = 0
     bet_placed_slug = None  # track which window already has a bet
 
     while state.bot_running:
@@ -282,6 +327,11 @@ def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
                             log_trade(trade)
                             bet_placed_slug = slug
                     last_analyze_time = now
+
+            # Sweep all pending trades every 60s
+            if now - last_sweep_time >= 60:
+                resolve_all_pending(btc_feed)
+                last_sweep_time = now
 
             time.sleep(1)
         except Exception as e:

@@ -556,17 +556,25 @@ const tColor = '#606075';
 function initCharts() {
   pnlChart = new Chart(document.getElementById('pnl-chart').getContext('2d'), {
     type: 'line',
-    data: { labels: [], datasets: [{
-      data: [], borderColor: '#818cf8',
-      backgroundColor: ctx => {
-        const { ctx: c, chartArea } = ctx.chart;
-        if (!chartArea) return 'transparent';
-        const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-        g.addColorStop(0, 'rgba(129,140,248,0.10)'); g.addColorStop(1, 'rgba(129,140,248,0)');
-        return g;
+    data: { labels: [], datasets: [
+      {
+        data: [], borderColor: '#818cf8',
+        backgroundColor: ctx => {
+          const { ctx: c, chartArea } = ctx.chart;
+          if (!chartArea) return 'transparent';
+          const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+          g.addColorStop(0, 'rgba(129,140,248,0.10)'); g.addColorStop(1, 'rgba(129,140,248,0)');
+          return g;
+        },
+        fill: true, tension: 0.4, pointRadius: 0, borderWidth: 1.5,
       },
-      fill: true, tension: 0.4, pointRadius: 0, borderWidth: 1.5,
-    }]},
+      {
+        label: 'Trend',
+        data: [], borderColor: 'rgba(250,204,21,0.7)',
+        borderWidth: 2, tension: 0.5, pointRadius: 0,
+        fill: false, borderDash: [],
+      }
+    ]},
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
       plugins: { legend: { display: false }, tooltip: { enabled: false } },
@@ -813,6 +821,16 @@ function updateInterval(data) {
 // ============================================================
 //  P&L CHART
 // ============================================================
+function calcEMA(data, period) {
+  if (!data.length) return [];
+  const k = 2 / (period + 1);
+  const ema = [data[0]];
+  for (let i = 1; i < data.length; i++) {
+    ema.push(data[i] * k + ema[i - 1] * (1 - k));
+  }
+  return ema;
+}
+
 function updatePnlChart(data) {
   if (!pnlChart) return;
   const curve = data.pnl_curve;
@@ -822,11 +840,22 @@ function updatePnlChart(data) {
   if (!values.length || values[values.length - 1] !== data.capital.current) {
     labels.push(now); values.push(data.capital.current);
   }
+
+  // EMA trend line (period 10 = smoothed over ~10 trades)
+  const emaPeriod = Math.max(5, Math.min(10, Math.floor(values.length / 3)));
+  const emaValues = calcEMA(values, emaPeriod);
+  // Color trend line based on direction (last EMA vs 3 points ago)
+  const emaDir = emaValues.length > 3 ? emaValues[emaValues.length - 1] - emaValues[emaValues.length - 4] : 0;
+  const trendColor = emaDir >= 0 ? 'rgba(74,222,128,0.7)' : 'rgba(248,113,113,0.7)';
+
   pnlChart.data.labels = labels;
   pnlChart.data.datasets[0].data = values;
+  pnlChart.data.datasets[1].data = emaValues;
+  pnlChart.data.datasets[1].borderColor = trendColor;
   const last = values[values.length - 1] || 1000;
   pnlChart.data.datasets[0].borderColor = last >= data.capital.start ? '#4ade80' : '#f87171';
-  const mn = Math.min(...values), mx = Math.max(...values);
+  const allVals = values.concat(emaValues);
+  const mn = Math.min(...allVals), mx = Math.max(...allVals);
   const pnlPad = Math.max((mx - mn) * 0.2, 10);
   pnlChart.options.scales.y.min = Math.floor(mn - pnlPad);
   pnlChart.options.scales.y.max = Math.ceil(mx + pnlPad);
