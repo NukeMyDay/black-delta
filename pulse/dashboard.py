@@ -266,8 +266,8 @@ def resolve_all_pending(btc_feed: BTCFeed):
             window_start_ts = int(slug.split("-")[-1])
             window_end_ts = window_start_ts + 300
 
-            # Only resolve if window has fully closed (buffer for settlement)
-            if now < window_end_ts + 30:
+            # Only resolve if window has fully closed (small buffer for settlement)
+            if now < window_end_ts + 15:
                 continue
 
             direction = trade.get("direction")
@@ -360,8 +360,8 @@ def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
                             bet_placed_slug = slug
                     last_analyze_time = now
 
-            # Sweep all pending trades every 60s
-            if now - last_sweep_time >= 60:
+            # Sweep all pending trades every 10s
+            if now - last_sweep_time >= 10:
                 resolve_all_pending(btc_feed)
                 last_sweep_time = now
 
