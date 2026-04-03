@@ -62,9 +62,8 @@ class BTCFeed:
                         try:
                             data = json.loads(msg)
                             price = float(data["p"])  # trade price
-                            ts = data["T"] / 1000     # trade time (ms -> s)
                             self._ws_price = price
-                            self._ws_ts = ts
+                            self._ws_ts = time.time()  # local clock for freshness check
                             self._add_price(price)
                         except (KeyError, ValueError):
                             pass
@@ -84,11 +83,11 @@ class BTCFeed:
         Get current BTC/USDT price.
         Prefers WebSocket (real-time), falls back to REST API.
         """
-        # Use WebSocket price if fresh (< 3 seconds old)
-        if self._ws_price > 0 and (time.time() - self._ws_ts) < 3:
+        # Use WebSocket price if fresh (< 5 seconds old)
+        if self._ws_price > 0 and (time.time() - self._ws_ts) < 5:
             return self._ws_price
 
-        # Fallback: REST API
+        # Fallback: REST API (WebSocket stale or not connected)
         try:
             resp = requests.get(
                 f"{BINANCE_API}/ticker/price",
