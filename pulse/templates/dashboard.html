@@ -504,8 +504,13 @@
     </div>
   </div>
 
+  <div id="live-analysis-section" style="margin-bottom:var(--spacing-lg)">
+    <div class="section-title">Live Analyse</div>
+    <div id="live-analysis-grid" class="kpi-grid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))"></div>
+  </div>
+
   <div id="contracts-section">
-    <div class="section-title">Aktuelle Contracts</div>
+    <div class="section-title">Aktive Wetten</div>
     <table class="contract-table" id="contracts-table">
       <thead>
         <tr>
@@ -516,13 +521,13 @@
           <th>Reale Prob.</th>
           <th>Markt</th>
           <th>Edge</th>
-          <th>EV Maker</th>
-          <th>EV Taker</th>
+          <th>EV/Dollar</th>
           <th>Order</th>
+          <th>Status</th>
         </tr>
       </thead>
       <tbody id="contracts-body">
-        <tr><td colspan="10" style="color:var(--text-dim); text-align:center; padding:20px">Warte auf Daten...</td></tr>
+        <tr><td colspan="10" style="color:var(--text-dim); text-align:center; padding:20px">Keine aktive Wette</td></tr>
       </tbody>
     </table>
     <div id="contract-note" style="font-size:11px; color:var(--text-dim); margin-top:6px; padding:0 2px;"></div>
@@ -539,7 +544,7 @@
     </div>
   </div>
   <div class="raw-data-wrap" id="export-panel">
-    <button class="raw-copy-btn" id="export-copy-btn" onclick="copyExportPanel()">Kopieren</button>
+    <button class="raw-copy-btn" id="export-copy-btn" onclick="copyExportPanel()" title="Kopieren"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     <pre id="export-pre"></pre>
   </div>
   <table class="trade-table">
@@ -709,6 +714,7 @@ function updateInterval(data) {
   const distWrap = document.getElementById('live-distance-wrap');
   const tbody = document.getElementById('contracts-body');
   const noteEl = document.getElementById('contract-note');
+  const liveGrid = document.getElementById('live-analysis-grid');
 
   feedBtcPrice(data.current.btc_price, data.current.target_price);
 
@@ -717,7 +723,8 @@ function updateInterval(data) {
     targetEl.textContent = '-';
     distWrap.innerHTML = '';
     sigEl.innerHTML = '';
-    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">Warte auf Daten...</td></tr>';
+    liveGrid.innerHTML = '';
+    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">Keine aktive Wette</td></tr>';
     noteEl.textContent = '';
     return;
   }
@@ -733,32 +740,55 @@ function updateInterval(data) {
   const orderPill = a.order_type === 'maker' ? ' <span class="pill pill-maker">MAKER</span>' : a.order_type === 'taker' ? ' <span class="pill pill-taker">TAKER</span>' : '';
   sigEl.innerHTML = `<span class="bet-signal ${betClass}">${betText}</span>${orderPill}`;
 
-  // Current live analysis — ONLY this row in the contracts table
-  const edgePct = (a.edge * 100).toFixed(2);
-  const edgeW = Math.min(Math.abs(a.edge) * 500, 100);
-  const edgeC = a.edge > 0 ? 'var(--green)' : 'var(--red)';
+  // Live analysis cards (constantly updating)
   const dirPill = a.direction === 'up' ? 'pill-up' : 'pill-down';
-  const orderLabel = a.order_type === 'maker' ? 'Limit (0%)' : a.order_type === 'taker' ? 'Market (7.2%)' : '-';
-  const orderPC = a.order_type === 'maker' ? 'pill-maker' : 'pill-taker';
+  const edgePct = (a.edge * 100).toFixed(2);
+  const edgeC = a.edge > 0 ? 'var(--green)' : 'var(--red)';
+  const liveItems = [
+    { label: 'Richtung', value: `<span class="pill ${dirPill}">${a.direction.toUpperCase()}</span>` },
+    { label: 'Contract', value: `$${a.contract_price.toFixed(2)}` },
+    { label: 'Sigma', value: a.sigma_move.toFixed(2) },
+    { label: 'Reale Prob.', value: `${(a.real_prob * 100).toFixed(2)}%` },
+    { label: 'Markt', value: `${(a.implied_prob * 100).toFixed(2)}%` },
+    { label: 'Edge', value: `<span style="color:${edgeC}">${edgePct}%</span>` },
+    { label: 'EV Maker', value: `<span style="color:${a.ev_per_dollar_maker > 0 ? 'var(--green)' : 'var(--red)'}">$${a.ev_per_dollar_maker > 0 ? '+' : ''}${a.ev_per_dollar_maker.toFixed(4)}</span>` },
+    { label: 'Payout', value: `${a.payout_multiplier.toFixed(1)}x` },
+  ];
+  if (a.reason) liveItems.push({ label: 'Status', value: `<span style="color:var(--text-dim);font-size:11px">${a.reason}</span>` });
+  liveGrid.innerHTML = liveItems.map(i => `<div class="kpi-item" style="padding:10px 14px"><div class="kpi-label">${i.label}</div><div class="kpi-value" style="font-size:16px">${i.value}</div></div>`).join('');
 
-  tbody.innerHTML = `
-    <tr>
-      <td><span class="pill ${dirPill}">${a.direction.toUpperCase()}</span></td>
-      <td class="mono">$${a.contract_price.toFixed(2)}</td>
-      <td>${a.payout_multiplier.toFixed(1)}x</td>
-      <td>${a.sigma_move.toFixed(2)}</td>
-      <td>${(a.real_prob * 100).toFixed(2)}%</td>
-      <td>${(a.implied_prob * 100).toFixed(2)}%</td>
-      <td class="${a.edge > 0 ? 'positive' : 'negative'}">${edgePct}% <span class="edge-bar"><span class="edge-bar-fill" style="width:${edgeW}%;background:${edgeC}"></span></span></td>
-      <td class="${a.ev_per_dollar_maker > 0 ? 'positive' : 'negative'}">$${a.ev_per_dollar_maker > 0 ? '+' : ''}${a.ev_per_dollar_maker.toFixed(4)}</td>
-      <td class="${a.ev_per_dollar_taker > 0 ? 'positive' : 'negative'}">$${a.ev_per_dollar_taker > 0 ? '+' : ''}${a.ev_per_dollar_taker.toFixed(4)}</td>
-      <td><span class="pill ${orderPC}">${orderLabel}</span></td>
-    </tr>`;
+  // Active bets table — show LOCKED-IN values from placed bets (not live)
+  const currentSlug = data.current.slug;
+  const activeBets = data.recent_trades.filter(t => t.bet_placed && t.outcome === 'pending');
 
-  const parts = [];
-  if (a.limit_price) parts.push(`Limit: $${a.limit_price.toFixed(2)}`);
-  if (a.reason) parts.push(a.reason);
-  noteEl.textContent = parts.join(' - ');
+  if (activeBets.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">Keine aktive Wette</td></tr>';
+    noteEl.textContent = '';
+  } else {
+    tbody.innerHTML = activeBets.map(t => {
+      const dp = t.direction === 'up' ? 'pill-up' : 'pill-down';
+      const ep = (t.edge * 100).toFixed(2);
+      const ew = Math.min(Math.abs(t.edge) * 500, 100);
+      const ec = t.edge > 0 ? 'var(--green)' : 'var(--red)';
+      const ot = t.order_type === 'maker' ? 'Limit' : t.order_type === 'taker' ? 'Market' : '-';
+      const oc = t.order_type === 'maker' ? 'pill-maker' : 'pill-taker';
+      const ev = t.ev_per_dollar || 0;
+      const pm = t.payout_multiplier || (t.contract_price > 0 ? (1 / t.contract_price) : 0);
+      return `<tr>
+        <td><span class="pill ${dp}">${t.direction.toUpperCase()}</span></td>
+        <td class="mono">$${(t.contract_price || 0).toFixed(2)}</td>
+        <td>${pm.toFixed(1)}x</td>
+        <td>${(t.sigma_move || 0).toFixed(2)}</td>
+        <td>${(t.real_prob * 100).toFixed(2)}%</td>
+        <td>${(t.implied_prob * 100).toFixed(2)}%</td>
+        <td class="${t.edge > 0 ? 'positive' : 'negative'}">${ep}% <span class="edge-bar"><span class="edge-bar-fill" style="width:${ew}%;background:${ec}"></span></span></td>
+        <td class="${ev > 0 ? 'positive' : 'negative'}">$${ev > 0 ? '+' : ''}${ev.toFixed(4)}</td>
+        <td><span class="pill ${oc}">${ot}</span></td>
+        <td><span class="pill" style="background:rgba(250,204,21,0.1);color:#facc15;border-color:rgba(250,204,21,0.3)">PENDING</span></td>
+      </tr>`;
+    }).join('');
+    noteEl.textContent = '';
+  }
 }
 
 // ============================================================
@@ -923,7 +953,7 @@ function toggleExport(fmt) {
 
   // Reset copy button
   const copyBtn = document.getElementById('export-copy-btn');
-  copyBtn.textContent = 'Kopieren';
+  copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
   copyBtn.classList.remove('copied');
 }
 
@@ -947,14 +977,14 @@ function fallbackCopy(pre, btn) {
   sel.removeAllRanges();
   sel.addRange(range);
   try { document.execCommand('copy'); showCopied(btn); }
-  catch (e) { btn.textContent = 'Manuell kopieren (Ctrl+C)'; }
+  catch (e) { btn.textContent = 'Ctrl+C'; }
   sel.removeAllRanges();
 }
 
 function showCopied(btn) {
-  btn.textContent = 'Kopiert!';
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
   btn.classList.add('copied');
-  setTimeout(() => { btn.textContent = 'Kopieren'; btn.classList.remove('copied'); }, 2000);
+  setTimeout(() => { btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'; btn.classList.remove('copied'); }, 2000);
 }
 
 // ============================================================
@@ -983,12 +1013,12 @@ async function loadStrategy() {
         <div class="section-title" style="margin-bottom:var(--spacing-sm)">So funktioniert PULSE</div>
         <p>${data.description.overview}</p>
       </div>
-      <div class="section-title">Berechnungs-Pipeline</div>
-      <div class="pipeline">${stepsHtml}</div>
       <div class="strategy-edge">
         <h3>Edge-Quelle</h3>
         <p>${data.description.edge_source}</p>
-      </div>`;
+      </div>
+      <div class="section-title">Berechnungs-Pipeline</div>
+      <div class="pipeline">${stepsHtml}</div>`;
 
     // Parameters
     document.getElementById('strategy-params').innerHTML = Object.entries(data.parameters).map(([k, v]) => `
