@@ -481,32 +481,33 @@
   </div>
 
   <div class="interval-header" id="interval-header">
-    <div class="interval-main">
-      <div id="slug-label" class="interval-slug"></div>
-      <div class="interval-prices">
-        <div class="price-block">
-          <label>BTC Preis</label>
-          <div class="price-val" id="live-btc-price">-</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;width:100%">
+      <div class="interval-main">
+        <div id="slug-label" class="interval-slug"></div>
+        <div class="interval-prices">
+          <div class="price-block">
+            <label>BTC Preis</label>
+            <div class="price-val" id="live-btc-price">-</div>
+          </div>
+          <div class="price-block">
+            <label>Price to Beat</label>
+            <div class="price-val dim" id="live-target-price">-</div>
+          </div>
+          <div id="live-distance-wrap" style="display:flex;align-items:center;"></div>
         </div>
-        <div class="price-block">
-          <label>Price to Beat</label>
-          <div class="price-val dim" id="live-target-price">-</div>
+      </div>
+      <div class="timer-right">
+        <div style="text-align:right;">
+          <div id="countdown-value" class="countdown normal">-:--</div>
+          <div class="time-bar"><div id="time-bar-fill" class="time-bar-fill" style="width:100%;background:var(--accent)"></div></div>
         </div>
-        <div id="live-distance-wrap" style="display:flex;align-items:center;"></div>
+        <div id="bet-signal-container"></div>
       </div>
     </div>
-    <div class="timer-right">
-      <div style="text-align:right;">
-        <div id="countdown-value" class="countdown normal">-:--</div>
-        <div class="time-bar"><div id="time-bar-fill" class="time-bar-fill" style="width:100%;background:var(--accent)"></div></div>
-      </div>
-      <div id="bet-signal-container"></div>
+    <div id="live-analysis-row" style="display:none;width:100%;margin-top:var(--spacing-md);padding-top:var(--spacing-md);border-top:1px solid var(--border)">
+      <div id="live-analysis-grid" style="display:flex;flex-wrap:wrap;gap:var(--spacing-sm) var(--spacing-lg);font-size:12px;"></div>
+      <div id="live-conclusion" style="margin-top:var(--spacing-sm);padding-top:var(--spacing-sm);border-top:1px solid var(--border);font-size:12.5px;line-height:1.5;"></div>
     </div>
-  </div>
-
-  <div id="live-analysis-section" style="margin-bottom:var(--spacing-lg)">
-    <div class="section-title">Live Analyse</div>
-    <div id="live-analysis-grid" class="kpi-grid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))"></div>
   </div>
 
   <div id="contracts-section">
@@ -715,6 +716,8 @@ function updateInterval(data) {
   const tbody = document.getElementById('contracts-body');
   const noteEl = document.getElementById('contract-note');
   const liveGrid = document.getElementById('live-analysis-grid');
+  const liveRow = document.getElementById('live-analysis-row');
+  const liveConclusion = document.getElementById('live-conclusion');
 
   feedBtcPrice(data.current.btc_price, data.current.target_price);
 
@@ -723,7 +726,7 @@ function updateInterval(data) {
     targetEl.textContent = '-';
     distWrap.innerHTML = '';
     sigEl.innerHTML = '';
-    liveGrid.innerHTML = '';
+    liveRow.style.display = 'none';
     tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">Keine aktive Wette</td></tr>';
     noteEl.textContent = '';
     return;
@@ -740,22 +743,37 @@ function updateInterval(data) {
   const orderPill = a.order_type === 'maker' ? ' <span class="pill pill-maker">MAKER</span>' : a.order_type === 'taker' ? ' <span class="pill pill-taker">TAKER</span>' : '';
   sigEl.innerHTML = `<span class="bet-signal ${betClass}">${betText}</span>${orderPill}`;
 
-  // Live analysis cards (constantly updating)
+  // Live analysis inline metrics
+  liveRow.style.display = 'block';
   const dirPill = a.direction === 'up' ? 'pill-up' : 'pill-down';
   const edgePct = (a.edge * 100).toFixed(2);
   const edgeC = a.edge > 0 ? 'var(--green)' : 'var(--red)';
-  const liveItems = [
-    { label: 'Richtung', value: `<span class="pill ${dirPill}">${a.direction.toUpperCase()}</span>` },
-    { label: 'Contract', value: `$${a.contract_price.toFixed(2)}` },
-    { label: 'Sigma', value: a.sigma_move.toFixed(2) },
-    { label: 'Reale Prob.', value: `${(a.real_prob * 100).toFixed(2)}%` },
-    { label: 'Markt', value: `${(a.implied_prob * 100).toFixed(2)}%` },
-    { label: 'Edge', value: `<span style="color:${edgeC}">${edgePct}%</span>` },
-    { label: 'EV Maker', value: `<span style="color:${a.ev_per_dollar_maker > 0 ? 'var(--green)' : 'var(--red)'}">$${a.ev_per_dollar_maker > 0 ? '+' : ''}${a.ev_per_dollar_maker.toFixed(4)}</span>` },
-    { label: 'Payout', value: `${a.payout_multiplier.toFixed(1)}x` },
-  ];
-  if (a.reason) liveItems.push({ label: 'Status', value: `<span style="color:var(--text-dim);font-size:11px">${a.reason}</span>` });
-  liveGrid.innerHTML = liveItems.map(i => `<div class="kpi-item" style="padding:10px 14px"><div class="kpi-label">${i.label}</div><div class="kpi-value" style="font-size:16px">${i.value}</div></div>`).join('');
+  const evC = a.ev_per_dollar_maker > 0 ? 'var(--green)' : 'var(--red)';
+
+  const metric = (label, val) => `<span style="color:var(--text-dim)">${label}</span> <span style="font-weight:600;font-variant-numeric:tabular-nums">${val}</span>`;
+  liveGrid.innerHTML = [
+    metric('Richtung', `<span class="pill ${dirPill}" style="font-size:11px;padding:2px 8px">${a.direction.toUpperCase()}</span>`),
+    metric('Contract', `$${a.contract_price.toFixed(2)}`),
+    metric('Payout', `${a.payout_multiplier.toFixed(1)}x`),
+    metric('Sigma', a.sigma_move.toFixed(2)),
+    metric('Prob.', `${(a.real_prob * 100).toFixed(1)}% <span style="color:var(--text-dim)">vs</span> ${(a.implied_prob * 100).toFixed(1)}%`),
+    metric('Edge', `<span style="color:${edgeC}">${edgePct}%</span>`),
+    metric('EV', `<span style="color:${evC}">$${a.ev_per_dollar_maker > 0 ? '+' : ''}${a.ev_per_dollar_maker.toFixed(4)}</span>`),
+  ].join('<span style="color:var(--border-light);margin:0 2px">|</span>');
+
+  // Conclusion line
+  if (a.reason) {
+    const isSkip = !a.should_bet;
+    const icon = isSkip ? '⏸' : '✓';
+    const color = isSkip ? 'var(--text-secondary)' : 'var(--green)';
+    liveConclusion.innerHTML = `<span style="color:${color}">${icon} ${a.reason}</span>`;
+    liveConclusion.style.display = 'block';
+  } else if (a.should_bet) {
+    liveConclusion.innerHTML = `<span style="color:var(--green)">✓ Edge gefunden — Bet wird platziert</span>`;
+    liveConclusion.style.display = 'block';
+  } else {
+    liveConclusion.style.display = 'none';
+  }
 
   // Active bets table — show LOCKED-IN values from placed bets (not live)
   const currentSlug = data.current.slug;
