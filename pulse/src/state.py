@@ -167,24 +167,43 @@ class PulseState:
                 })
 
     def close_follow_trades(self, event_slug: str, direction: str,
-                            sell_price: float) -> int:
+                            sell_price: float, sell_size: float = 0) -> int:
         """Close pending follow trades via early exit (SELL).
 
-        P&L = stake * (sell_price / buy_price - 1).
-        Returns the number of trades closed.
+        Proportional closing: compares sell_size to total source position.
+        If sell_size covers >=99% of the position, all trades close.
+        Otherwise, trades close FIFO (oldest first); the last trade may
+        be split into a closed portion and a smaller remaining position.
+
+        P&L per closed portion = stake * (sell_price / buy_price - 1).
+        Returns the number of close operations performed.
         """
         with self._lock:
+            # Gather all pending trades matching slug + direction
+            pending = [
+                t for t in self.follow_trades
+                if (t.get("event_slug") == event_slug
+                    and t.get("direction") == direction
+                    and t.get("outcome") == "pending")
+            ]
+            if not pending:
+                return 0
+
+            total_source = sum(t.get("source_size", 0) for t in pending)
+            # Fall back to full close when sell_size unknown or covers all
+            fraction = (sell_size / total_source) if total_source > 0 and sell_size > 0 else 1.0
+
             closed = 0
-            for trade in self.follow_trades:
-                if (trade.get("event_slug") == event_slug
-                        and trade.get("direction") == direction
-                        and trade.get("outcome") == "pending"):
+            splits_to_add: list[dict] = []
+
+            if fraction >= 0.99:
+                # --- Full close: liquidate every pending trade ---
+                for trade in pending:
                     buy_price = trade.get("contract_price", 0)
                     if buy_price <= 0:
                         continue
                     stake = trade.get("stake_usd", 0)
                     pnl = round(stake * (sell_price / buy_price - 1), 2)
-
                     trade["outcome"] = "closed"
                     trade["pnl_usd"] = pnl
                     trade["sell_price"] = sell_price
@@ -195,6 +214,65 @@ class PulseState:
                     else:
                         self.follow_losses += 1
                     closed += 1
+            else:
+                # --- Partial close: FIFO (oldest first) ---
+                remaining = sell_size
+                for trade in reversed(pending):  # reversed = oldest first
+                    if remaining <= 0:
+                        break
+                    buy_price = trade.get("contract_price", 0)
+                    if buy_price <= 0:
+                        continue
+
+                    trade_size = trade.get("source_size", 0)
+                    trade_stake = trade.get("stake_usd", 0)
+
+                    if trade_size <= remaining:
+                        # Close this trade fully
+                        pnl = round(trade_stake * (sell_price / buy_price - 1), 2)
+                        trade["outcome"] = "closed"
+                        trade["pnl_usd"] = pnl
+                        trade["sell_price"] = sell_price
+                        self.follow_pnl += pnl
+                        self.follow_capital += pnl
+                        if pnl >= 0:
+                            self.follow_wins += 1
+                        else:
+                            self.follow_losses += 1
+                        remaining -= trade_size
+                        closed += 1
+                    else:
+                        # Split: close a fraction, keep the rest pending
+                        close_frac = remaining / trade_size
+                        closed_stake = round(trade_stake * close_frac, 2)
+                        pnl = round(closed_stake * (sell_price / buy_price - 1), 2)
+
+                        # Build the closed split BEFORE modifying original
+                        split = dict(trade)
+                        split["outcome"] = "closed"
+                        split["pnl_usd"] = pnl
+                        split["sell_price"] = sell_price
+                        split["stake_usd"] = closed_stake
+                        split["source_size"] = round(remaining, 4)
+                        split["partial_close"] = True
+                        splits_to_add.append(split)
+
+                        # Shrink the original trade (stays pending)
+                        trade["stake_usd"] = round(trade_stake - closed_stake, 2)
+                        trade["source_size"] = round(trade_size - remaining, 4)
+
+                        self.follow_pnl += pnl
+                        self.follow_capital += pnl
+                        if pnl >= 0:
+                            self.follow_wins += 1
+                        else:
+                            self.follow_losses += 1
+                        remaining = 0
+                        closed += 1
+
+            # Insert split entries at the front of the deque
+            for split in splits_to_add:
+                self.follow_trades.appendleft(split)
 
             if closed > 0:
                 self.follow_pnl_curve.append({

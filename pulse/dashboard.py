@@ -437,12 +437,15 @@ def handle_follow_trade(trade_data: dict):
 
 def _handle_follow_sell(trade_data: dict, direction: str, sell_price: float,
                         sell_size: float, event_slug: str):
-    """Close pending follow positions when the source user sells (early exit)."""
-    closed = state.close_follow_trades(event_slug, direction, sell_price)
+    """Close pending follow positions when the source user sells (early exit).
+
+    Passes sell_size so state can do proportional (partial) closes.
+    """
+    closed = state.close_follow_trades(event_slug, direction, sell_price, sell_size)
     if closed > 0:
         name = trade_data.get("name", "") or "unknown"
         print(f"[FOLLOW] SELL: closed {closed} {direction.upper()} position(s) "
-              f"@ ${sell_price:.2f} from {name}")
+              f"@ ${sell_price:.2f} x{sell_size:.1f} from {name}")
 
 
 ANALYZE_INTERVAL = 1  # re-analyze every N seconds
