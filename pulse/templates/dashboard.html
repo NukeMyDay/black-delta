@@ -783,7 +783,7 @@
       <div class="follow-stat-value" id="follow-capital">-</div>
     </div>
     <div class="follow-stat-card">
-      <div class="follow-stat-label">P&L</div>
+      <div class="follow-stat-label">Profit</div>
       <div class="follow-stat-value" id="follow-pnl">-</div>
     </div>
     <div class="follow-stat-card">
@@ -837,7 +837,7 @@
   </div>
   <table class="trade-table">
     <thead>
-      <tr><th>Time</th><th>Source</th><th>Asset</th><th>Direction</th><th>Price</th><th>Payout</th><th>Source $</th><th>Our $</th><th>Outcome</th><th>P&L</th></tr>
+      <tr><th>Time</th><th>Source</th><th>Asset</th><th>Direction</th><th>Price</th><th>Payout</th><th>Source $</th><th>Our $</th><th>Outcome</th><th>Profit</th></tr>
     </thead>
     <tbody id="follow-trades-body"></tbody>
   </table>
@@ -1540,9 +1540,9 @@ function updateFollowTab(data) {
         outcomeHtml = '<span class="pill pill-lose">LOSE</span>';
       }
 
-      const pnlVal = t.pnl_usd || 0;
-      const pnlStr = (t.outcome === 'pending') ? '-' :
-        `<span style="color:${pnlVal >= 0 ? 'var(--green)' : 'var(--red)'}">${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</span>`;
+      const pnlVal = (typeof t.pnl_usd === 'number' && t.pnl_usd !== 0) ? t.pnl_usd : null;
+      const pnlStr = (t.outcome === 'pending' || pnlVal === null) ? '-' :
+        `<span style="color:${pnlVal >= 0 ? 'var(--green)' : 'var(--red)'}">${pnlVal >= 0 ? '+' : '-'}$${Math.abs(pnlVal).toFixed(2)}</span>`;
 
       const slug = t.event_slug || t.slug || '';
       const title = t.title || slug;
