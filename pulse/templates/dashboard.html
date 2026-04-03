@@ -602,21 +602,27 @@ function initCharts() {
     type: 'line',
     data: { labels: [], datasets: [
       {
-        data: [], borderColor: '#818cf8',
+        data: [], borderColor: 'rgba(255,255,255,0.6)',
         backgroundColor: ctx => {
           const { ctx: c, chartArea } = ctx.chart;
           if (!chartArea) return 'transparent';
           const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-          g.addColorStop(0, 'rgba(129,140,248,0.10)'); g.addColorStop(1, 'rgba(129,140,248,0)');
+          g.addColorStop(0, 'rgba(255,255,255,0.06)'); g.addColorStop(1, 'rgba(255,255,255,0)');
           return g;
         },
-        fill: true, tension: 0.4, pointRadius: 0, borderWidth: 1.5,
+        fill: true, tension: 0.4, pointRadius: 0, borderWidth: 1.2,
       },
       {
         label: 'Trend',
-        data: [], borderColor: 'rgba(250,204,21,0.7)',
+        data: [], borderColor: 'rgba(74,222,128,0.7)',
         borderWidth: 2, tension: 0.5, pointRadius: 0,
         fill: false, borderDash: [],
+      },
+      {
+        label: 'Start',
+        data: [], borderColor: 'rgba(255,255,255,0.15)',
+        borderWidth: 1, pointRadius: 0,
+        fill: false, borderDash: [6, 4],
       }
     ]},
     options: {
@@ -789,8 +795,9 @@ function updatePnlChart(data) {
   pnlChart.data.datasets[0].data = values;
   pnlChart.data.datasets[1].data = emaValues;
   pnlChart.data.datasets[1].borderColor = trendColor;
+  // Reference line at starting capital
+  pnlChart.data.datasets[2].data = values.map(() => data.capital.start);
   const last = values[values.length - 1] || 1000;
-  pnlChart.data.datasets[0].borderColor = last >= data.capital.start ? '#4ade80' : '#f87171';
   const allVals = values.concat(emaValues);
   const mn = Math.min(...allVals), mx = Math.max(...allVals);
   const pnlPad = Math.max((mx - mn) * 0.2, 10);
@@ -798,7 +805,7 @@ function updatePnlChart(data) {
   pnlChart.options.scales.y.max = Math.ceil(mx + pnlPad);
   pnlChart.update('none');
   document.getElementById('pnl-chart-value').textContent = 'EUR ' + data.capital.current.toLocaleString('de-DE', { minimumFractionDigits: 2 });
-  document.getElementById('pnl-chart-value').style.color = last >= data.capital.start ? 'var(--green)' : 'var(--red)';
+  document.getElementById('pnl-chart-value').style.color = emaDir >= 0 ? 'var(--green)' : 'var(--red)';
 }
 
 // ============================================================
