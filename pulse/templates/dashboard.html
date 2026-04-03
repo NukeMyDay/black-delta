@@ -821,6 +821,7 @@
       <span class="follow-filter-sep"></span>
       <button class="follow-filter-btn" data-filter="win" onclick="setFollowFilter('win')">Wins</button>
       <button class="follow-filter-btn" data-filter="lose" onclick="setFollowFilter('lose')">Losses</button>
+      <button class="follow-filter-btn" data-filter="closed" onclick="setFollowFilter('closed')">Closed</button>
       <button class="follow-filter-btn" data-filter="pending" onclick="setFollowFilter('pending')">Pending</button>
     </div>
     <span class="follow-trade-count" id="follow-trade-count"></span>
@@ -1519,6 +1520,10 @@ function updateFollowTab(data) {
         } else {
           outcomeHtml = '<span class="pill" style="background:rgba(247,147,26,0.1);color:var(--orange)">PENDING</span>';
         }
+      } else if (t.outcome === 'closed') {
+        const closedPnl = t.pnl_usd || 0;
+        const closedColor = closedPnl >= 0 ? 'var(--green)' : 'var(--red)';
+        outcomeHtml = `<span class="pill" style="background:rgba(129,140,248,0.1);color:${closedColor}">CLOSED</span>`;
       } else if (t.outcome === 'win') {
         outcomeHtml = '<span class="pill pill-win">WIN</span>';
       } else {
@@ -1526,7 +1531,7 @@ function updateFollowTab(data) {
       }
 
       const pnlVal = t.pnl_usd || 0;
-      const pnlStr = t.outcome === 'pending' ? '-' :
+      const pnlStr = (t.outcome === 'pending') ? '-' :
         `<span style="color:${pnlVal >= 0 ? 'var(--green)' : 'var(--red)'}">${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</span>`;
 
       const slug = t.event_slug || t.slug || '';
@@ -1585,6 +1590,7 @@ function filterFollowTrades(trades) {
       case 'eth': return slug.includes('eth') || title.includes('ethereum');
       case 'win': return t.outcome === 'win';
       case 'lose': return t.outcome === 'lose';
+      case 'closed': return t.outcome === 'closed';
       case 'pending': return t.outcome === 'pending';
       default: return true;
     }

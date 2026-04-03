@@ -166,6 +166,44 @@ class PulseState:
                     "pnl": round(self.follow_pnl, 2),
                 })
 
+    def close_follow_trades(self, event_slug: str, direction: str,
+                            sell_price: float) -> int:
+        """Close pending follow trades via early exit (SELL).
+
+        P&L = stake * (sell_price / buy_price - 1).
+        Returns the number of trades closed.
+        """
+        with self._lock:
+            closed = 0
+            for trade in self.follow_trades:
+                if (trade.get("event_slug") == event_slug
+                        and trade.get("direction") == direction
+                        and trade.get("outcome") == "pending"):
+                    buy_price = trade.get("contract_price", 0)
+                    if buy_price <= 0:
+                        continue
+                    stake = trade.get("stake_usd", 0)
+                    pnl = round(stake * (sell_price / buy_price - 1), 2)
+
+                    trade["outcome"] = "closed"
+                    trade["pnl_usd"] = pnl
+                    trade["sell_price"] = sell_price
+                    self.follow_pnl += pnl
+                    self.follow_capital += pnl
+                    if pnl >= 0:
+                        self.follow_wins += 1
+                    else:
+                        self.follow_losses += 1
+                    closed += 1
+
+            if closed > 0:
+                self.follow_pnl_curve.append({
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "capital": round(self.follow_capital, 2),
+                    "pnl": round(self.follow_pnl, 2),
+                })
+            return closed
+
     def get_follow_snapshot(self) -> dict:
         """Return follow-mode state for the API."""
         with self._lock:

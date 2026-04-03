@@ -372,45 +372,43 @@ def resolve_follow_pending(btc_feed: BTCFeed):
 
 
 def handle_follow_trade(trade_data: dict):
-    """Callback when a followed user trades. Records a copy-trade."""
-    # Only copy BUY trades (opening positions)
-    if trade_data.get("side", "").upper() != "BUY":
-        return
-
+    """Callback when a followed user trades. Handles BUY (open) and SELL (close)."""
+    side = trade_data.get("side", "").upper()
     outcome_raw = trade_data.get("outcome", "").lower()
-    if outcome_raw == "up":
-        direction = "up"
-    elif outcome_raw == "down":
-        direction = "down"
-    else:
-        direction = outcome_raw
-
+    direction = "up" if outcome_raw == "up" else "down" if outcome_raw == "down" else outcome_raw
     price = trade_data.get("price", 0)
     size = trade_data.get("size", 0)
+    event_slug = trade_data.get("event_slug", "")
+
     if price <= 0 or price >= 1:
         return
 
+    if side == "SELL":
+        # Early exit: close matching pending BUY trades for this slug + direction
+        _handle_follow_sell(trade_data, direction, price, size, event_slug)
+        return
+
+    if side != "BUY":
+        return
+
+    # --- BUY: open a new position ---
     source_cost = round(price * size, 2)
 
     if _follow_config["simulation"]:
-        # Simulation: 1:1 copy of source bet (track their actual performance)
         stake = source_cost
     elif _follow_config["auto_mode"]:
-        # Auto: fraction of current capital per bet
         fraction = _follow_config["auto_fraction"]
         stake = round(state.follow_capital * fraction, 2)
         stake = min(stake, _follow_config["max_stake"])
     else:
-        # Manual: proportional to source with multiplier
         stake = round(source_cost * _follow_config["multiplier"], 2)
         stake = min(stake, _follow_config["max_stake"])
 
     stake = max(stake, 0.01)
-
     payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
 
     copy_trade = {
-        "event_slug": trade_data.get("event_slug", ""),
+        "event_slug": event_slug,
         "direction": direction,
         "contract_price": price,
         "payout_multiplier": payout_multiplier,
@@ -432,9 +430,19 @@ def handle_follow_trade(trade_data: dict):
     }
 
     state.record_follow_trade(copy_trade)
-    print(f"[FOLLOW] Copied: {direction.upper()} @ ${price:.2f} "
+    print(f"[FOLLOW] BUY copied: {direction.upper()} @ ${price:.2f} "
           f"(source ${source_cost:.2f} -> our ${stake:.2f}) "
           f"from {copy_trade['source_name'] or 'unknown'}")
+
+
+def _handle_follow_sell(trade_data: dict, direction: str, sell_price: float,
+                        sell_size: float, event_slug: str):
+    """Close pending follow positions when the source user sells (early exit)."""
+    closed = state.close_follow_trades(event_slug, direction, sell_price)
+    if closed > 0:
+        name = trade_data.get("name", "") or "unknown"
+        print(f"[FOLLOW] SELL: closed {closed} {direction.upper()} position(s) "
+              f"@ ${sell_price:.2f} from {name}")
 
 
 ANALYZE_INTERVAL = 1  # re-analyze every N seconds
