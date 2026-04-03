@@ -48,6 +48,21 @@ class PulseState:
         self.volatility: float = 0
         self.prices_loaded: int = 0
 
+        # --- Follow Mode ---
+        self.follow_trades: deque[dict] = deque(maxlen=500)
+        self.follow_capital = start_capital
+        self.follow_start_capital = start_capital
+        self.follow_total_bets = 0
+        self.follow_wins = 0
+        self.follow_losses = 0
+        self.follow_pnl = 0.0
+        self.follow_pnl_curve: deque[dict] = deque(maxlen=2000)
+        self.follow_pnl_curve.append({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "capital": start_capital,
+            "pnl": 0,
+        })
+
     def update_current(self, slug: str, analysis: dict, btc_price: float,
                        target_price: float, volatility: float):
         with self._lock:
@@ -99,6 +114,72 @@ class PulseState:
                             "pnl": round(self.total_pnl, 2),
                         })
                     break
+
+    # ------------------------------------------------------------------
+    #  Follow Mode
+    # ------------------------------------------------------------------
+    def record_follow_trade(self, trade: dict):
+        """Record a copy-trade from a followed wallet."""
+        with self._lock:
+            # Dedup by tx_hash
+            tx = trade.get("tx_hash")
+            if tx:
+                for existing in self.follow_trades:
+                    if existing.get("tx_hash") == tx:
+                        return
+            self.follow_trades.appendleft(trade)
+            self.follow_total_bets += 1
+
+    def resolve_follow_trade(self, event_slug: str, outcome: str, _btc_close: float):
+        """Resolve a pending follow trade."""
+        with self._lock:
+            for trade in self.follow_trades:
+                if (trade.get("event_slug") == event_slug
+                        and trade.get("outcome") == "pending"):
+                    trade["outcome"] = outcome
+                    stake = trade.get("stake_usd", 0)
+                    multiplier = trade.get("payout_multiplier", 0)
+                    if outcome == "win":
+                        pnl = stake * (multiplier - 1)
+                        self.follow_wins += 1
+                    else:
+                        pnl = -stake
+                        self.follow_losses += 1
+                    trade["pnl_usd"] = round(pnl, 2)
+                    self.follow_pnl += pnl
+                    self.follow_capital += pnl
+
+                    self.follow_pnl_curve.append({
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "capital": round(self.follow_capital, 2),
+                        "pnl": round(self.follow_pnl, 2),
+                    })
+                    break
+
+    def get_follow_snapshot(self) -> dict:
+        """Return follow-mode state for the API."""
+        with self._lock:
+            win_rate = (self.follow_wins / self.follow_total_bets * 100
+                        if self.follow_total_bets > 0 else 0)
+            return {
+                "capital": {
+                    "start": self.follow_start_capital,
+                    "current": round(self.follow_capital, 2),
+                    "pnl": round(self.follow_pnl, 2),
+                    "pnl_pct": round(self.follow_pnl / self.follow_start_capital * 100, 2)
+                            if self.follow_start_capital else 0,
+                },
+                "stats": {
+                    "total_bets": self.follow_total_bets,
+                    "wins": self.follow_wins,
+                    "losses": self.follow_losses,
+                    "win_rate": round(win_rate, 1),
+                    "pending": sum(1 for t in self.follow_trades
+                                   if t.get("outcome") == "pending"),
+                },
+                "trades": list(self.follow_trades),
+                "pnl_curve": list(self.follow_pnl_curve),
+            }
 
     def get_snapshot(self) -> dict:
         with self._lock:

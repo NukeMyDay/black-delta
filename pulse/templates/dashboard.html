@@ -344,6 +344,37 @@
       font-weight: 600; margin-bottom: var(--spacing-md);
     }
 
+    /* --- FOLLOW TAB --- */
+    .follow-status-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 16px; background: var(--surface); border-radius: var(--radius);
+      border: 1px solid var(--border); margin-bottom: var(--spacing-md);
+    }
+    .follow-status-left, .follow-status-right {
+      display: flex; align-items: center; gap: 8px; font-size: 12px;
+    }
+    .follow-status-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--red);
+    }
+    .follow-status-dot.connected { background: var(--green); animation: pulse 2s ease-in-out infinite; }
+    .follow-stats {
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--spacing-sm);
+      margin-bottom: var(--spacing-md);
+    }
+    .follow-stat-card {
+      background: var(--surface); border-radius: var(--radius);
+      padding: 14px 16px; border: 1px solid var(--border);
+    }
+    .follow-stat-label {
+      font-size: 10px; color: var(--text-dim); text-transform: uppercase;
+      letter-spacing: 0.6px; font-weight: 600; margin-bottom: 4px;
+    }
+    .follow-stat-value {
+      font-size: 16px; font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
     /* --- TRADE HISTORY TABLE --- */
     .trade-table { width: 100%; border-collapse: collapse; }
     .trade-table th {
@@ -474,6 +505,7 @@
       .export-toolbar { flex-direction: column; align-items: flex-start; }
       .pipeline-step { grid-template-columns: 36px 1fr; }
       .param-grid { grid-template-columns: 1fr 1fr; }
+      .follow-stats { grid-template-columns: repeat(3, 1fr); }
     }
   </style>
 </head>
@@ -490,6 +522,7 @@
 <div class="tabs">
   <div class="tab active" data-tab="live">Live Trading</div>
   <div class="tab" data-tab="history">History</div>
+  <div class="tab" data-tab="follow">Follow</div>
   <div class="tab" data-tab="strategy">Strategy & Formula</div>
 </div>
 
@@ -616,6 +649,64 @@
        onmouseout="this.style.background='var(--surface-2)';this.style.color='var(--text-secondary)'"
     >Load more</button>
   </div>
+</div>
+
+<div id="tab-follow" class="content hidden">
+  <!-- Follow Status Bar -->
+  <div class="follow-status-bar" id="follow-status-bar">
+    <div class="follow-status-left">
+      <span class="follow-status-dot" id="follow-dot"></span>
+      <span id="follow-conn-label">Disconnected</span>
+      <span style="color:var(--text-dim);margin-left:12px" id="follow-wallet-count">0 wallets</span>
+    </div>
+    <div class="follow-status-right">
+      <span style="color:var(--text-dim)">Stake:</span>
+      <span id="follow-stake" style="font-family:'JetBrains Mono',monospace;font-weight:600">$5.00</span>
+    </div>
+  </div>
+
+  <!-- Follow Stats Cards -->
+  <div class="follow-stats" id="follow-stats">
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Capital</div>
+      <div class="follow-stat-value" id="follow-capital">$1,000.00</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">P&L</div>
+      <div class="follow-stat-value" id="follow-pnl">$0.00</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Bets</div>
+      <div class="follow-stat-value" id="follow-bets">0</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Win Rate</div>
+      <div class="follow-stat-value" id="follow-winrate">-</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Pending</div>
+      <div class="follow-stat-value" id="follow-pending">0</div>
+    </div>
+  </div>
+
+  <!-- Followed Wallets -->
+  <div class="section-title" style="margin-top:var(--spacing-lg)">Followed Wallets</div>
+  <table class="trade-table" id="follow-wallets-table">
+    <thead>
+      <tr><th>Label</th><th>Address</th><th>Proxy</th><th>Trades Detected</th></tr>
+    </thead>
+    <tbody id="follow-wallets-body"></tbody>
+  </table>
+
+  <!-- Follow Trades -->
+  <div class="section-title" style="margin-top:var(--spacing-lg)">Copy Trades</div>
+  <table class="trade-table">
+    <thead>
+      <tr><th>Time</th><th>Source</th><th>Market</th><th>Direction</th><th>Price</th><th>Payout</th><th>Stake</th><th>Outcome</th><th>P&L</th></tr>
+    </thead>
+    <tbody id="follow-trades-body"></tbody>
+  </table>
+  <div id="follow-no-trades" style="padding:40px; text-align:center; color:var(--text-dim)">No copy trades yet</div>
 </div>
 
 <div id="tab-strategy" class="content hidden">
@@ -1154,6 +1245,125 @@ async function loadStrategy() {
 }
 
 // ============================================================
+//  FOLLOW TAB
+// ============================================================
+let lastFollowData = null;
+
+async function pollFollow() {
+  try {
+    const data = await (await fetch('/api/follow')).json();
+    lastFollowData = data;
+    updateFollowTab(data);
+  } catch (e) { console.error('Follow poll:', e); }
+}
+
+function updateFollowTab(data) {
+  const feed = data.feed || {};
+  const stats = data.stats || {};
+  const capital = data.capital || {};
+
+  // Connection status
+  const dot = document.getElementById('follow-dot');
+  const connLabel = document.getElementById('follow-conn-label');
+  if (feed.connected) {
+    dot.classList.add('connected');
+    connLabel.textContent = 'Connected to RTDS';
+    connLabel.style.color = 'var(--green)';
+  } else {
+    dot.classList.remove('connected');
+    connLabel.textContent = 'Disconnected';
+    connLabel.style.color = 'var(--red)';
+  }
+
+  document.getElementById('follow-wallet-count').textContent =
+    `${feed.wallets_count || 0} wallet${(feed.wallets_count || 0) !== 1 ? 's' : ''}`;
+
+  // Stats cards
+  document.getElementById('follow-capital').textContent = '$' + (capital.current || 1000).toLocaleString('en-US', { minimumFractionDigits: 2 });
+  const pnlEl = document.getElementById('follow-pnl');
+  const pnl = capital.pnl || 0;
+  pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+  pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+  document.getElementById('follow-bets').textContent = stats.total_bets || 0;
+  document.getElementById('follow-winrate').textContent = stats.total_bets > 0 ? stats.win_rate + '%' : '-';
+  document.getElementById('follow-pending').textContent = stats.pending || 0;
+
+  // Wallets table
+  const walletsBody = document.getElementById('follow-wallets-body');
+  const wallets = feed.wallets || [];
+  if (wallets.length === 0) {
+    walletsBody.innerHTML = '<tr><td colspan="4" style="color:var(--text-dim);text-align:center;padding:20px">No wallets configured</td></tr>';
+  } else {
+    walletsBody.innerHTML = wallets.map(w => `<tr>
+      <td style="font-weight:600;color:var(--text)">${w.label || '-'}</td>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${w.address}</td>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${w.proxy || '-'}</td>
+      <td>${w.trades}</td>
+    </tr>`).join('');
+  }
+
+  // Trades table
+  const tradesBody = document.getElementById('follow-trades-body');
+  const noTrades = document.getElementById('follow-no-trades');
+  const trades = data.trades || [];
+
+  if (trades.length === 0) {
+    tradesBody.innerHTML = '';
+    noTrades.style.display = 'block';
+  } else {
+    noTrades.style.display = 'none';
+    tradesBody.innerHTML = trades.slice(0, 50).map(t => {
+      const time = t.time ? new Date(t.time).toLocaleString('en-US', {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+      }) : '-';
+
+      const dirPill = t.direction === 'up' ? 'pill-up' : 'pill-down';
+      const dirLabel = (t.direction || '').toUpperCase();
+
+      let outcomeHtml;
+      if (t.outcome === 'pending') {
+        // Check if window expired
+        const slug = t.event_slug || t.slug || '';
+        const parts = slug.split('-');
+        const startTs = parseInt(parts[parts.length - 1]) || 0;
+        const dur = slug.includes('15m') ? 900 : 300;
+        const endTs = startTs + dur;
+        const now = Date.now() / 1000;
+        if (startTs > 0 && now > endTs) {
+          outcomeHtml = '<span class="pill" style="background:rgba(129,140,248,0.1);color:#818cf8">VALIDATING</span>';
+        } else {
+          outcomeHtml = '<span class="pill" style="background:rgba(247,147,26,0.1);color:var(--orange)">PENDING</span>';
+        }
+      } else if (t.outcome === 'win') {
+        outcomeHtml = '<span class="pill pill-win">WIN</span>';
+      } else {
+        outcomeHtml = '<span class="pill pill-lose">LOSE</span>';
+      }
+
+      const pnlVal = t.pnl_usd || 0;
+      const pnlStr = t.outcome === 'pending' ? '-' :
+        `<span style="color:${pnlVal >= 0 ? 'var(--green)' : 'var(--red)'}">${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</span>`;
+
+      const slug = t.event_slug || t.slug || '';
+      const slugShort = slug.length > 20 ? '...' + slug.slice(-18) : slug;
+
+      return `<tr>
+        <td style="white-space:nowrap;font-size:11px">${time}</td>
+        <td style="font-weight:500;color:var(--text)">${t.source_name || 'unknown'}</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)" title="${slug}">${slugShort}</td>
+        <td><span class="pill ${dirPill}">${dirLabel}</span></td>
+        <td style="font-family:'JetBrains Mono',monospace">$${(t.contract_price || 0).toFixed(2)}</td>
+        <td style="font-family:'JetBrains Mono',monospace">${(t.payout_multiplier || 0).toFixed(1)}x</td>
+        <td style="font-family:'JetBrains Mono',monospace">$${(t.stake_usd || 0).toFixed(2)}</td>
+        <td>${outcomeHtml}</td>
+        <td style="font-family:'JetBrains Mono',monospace">${pnlStr}</td>
+      </tr>`;
+    }).join('');
+  }
+}
+
+// ============================================================
 //  POLL
 // ============================================================
 async function poll() {
@@ -1165,7 +1375,14 @@ async function poll() {
     updatePnlChart(data);
     updateTradeHistory(data);
   } catch (e) { console.error('Poll:', e); }
+
+  // Poll follow data when on follow tab (or every 5s regardless)
+  if (currentTab === 'follow' || !lastFollowData) {
+    pollFollow();
+  }
 }
+
+let followPollCounter = 0;
 
 // ============================================================
 //  INIT
@@ -1174,6 +1391,7 @@ initCharts();
 loadStrategy();
 poll();
 setInterval(poll, POLL_MS);
+setInterval(() => { if (currentTab !== 'follow') pollFollow(); }, 5000);
 
 document.getElementById('load-more-btn').addEventListener('click', () => {
   historyVisible += HISTORY_PAGE_SIZE;

@@ -33,6 +33,7 @@ from src.polymarket import (
 )
 from src.formula import PulseFormula
 from src.btc_feed import BTCFeed
+from src.follow_feed import FollowFeed
 from src.state import state
 from src.logger import log_trade
 
@@ -45,11 +46,16 @@ STUDENT_T_DF = float(os.getenv("PULSE_STUDENT_T_DF", "4"))
 TAKER_SWITCH_SECONDS = 30
 MAKER_PRICE_OFFSET = 0.01
 
+# Follow mode config
+FOLLOW_WALLETS = os.getenv("FOLLOW_WALLETS", "")  # comma-separated addresses
+FOLLOW_STAKE_USD = float(os.getenv("FOLLOW_STAKE_USD", str(STAKE_USD)))
+
 app = FastAPI(title="BLACK DELTA / PULSE")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Module-level reference for API access
+# Module-level references for API access
 _btc_feed: BTCFeed | None = None
+_follow_feed: FollowFeed | None = None
 
 
 # --- Bot Logic (runs in background thread) ---
@@ -299,6 +305,104 @@ def resolve_all_pending(btc_feed: BTCFeed):
             continue
 
 
+def resolve_follow_pending(btc_feed: BTCFeed):
+    """Sweep pending follow trades and resolve them."""
+    now = time.time()
+    pending = [t for t in state.follow_trades
+               if t.get("outcome") == "pending"]
+
+    for trade in pending:
+        slug = trade.get("event_slug")
+        if not slug:
+            continue
+        try:
+            # Extract window timing from slug
+            parts = slug.split("-")
+            window_start_ts = int(parts[-1])
+            # Determine window duration from slug pattern
+            if "15m" in slug:
+                window_dur = 900
+            elif "5m" in slug:
+                window_dur = 300
+            else:
+                window_dur = 300  # default
+            window_end_ts = window_start_ts + window_dur
+
+            if now < window_end_ts + 15:
+                continue
+
+            direction = trade.get("direction")
+            resolved = False
+
+            # Primary: Polymarket outcome
+            market_winner = fetch_market_outcome(slug)
+            if market_winner:
+                won = (direction == market_winner)
+                outcome = "win" if won else "lose"
+                state.resolve_follow_trade(slug, outcome, 0)
+                resolved = True
+
+            # Fallback: Binance
+            if not resolved and now > window_end_ts + 180:
+                open_price = btc_feed.fetch_price_at_time(window_start_ts * 1000)
+                close_price = btc_feed.fetch_price_at_time(window_end_ts * 1000)
+                if open_price and close_price:
+                    if direction == "down":
+                        won = close_price < open_price
+                    else:
+                        won = close_price >= open_price
+                    outcome = "win" if won else "lose"
+                    state.resolve_follow_trade(slug, outcome, close_price)
+        except (ValueError, IndexError):
+            continue
+
+
+def handle_follow_trade(trade_data: dict):
+    """Callback when a followed user trades. Records a copy-trade."""
+    # Only copy BUY trades (opening positions)
+    if trade_data.get("side", "").upper() != "BUY":
+        return
+
+    outcome_raw = trade_data.get("outcome", "").lower()
+    if outcome_raw == "up":
+        direction = "up"
+    elif outcome_raw == "down":
+        direction = "down"
+    else:
+        direction = outcome_raw
+
+    price = trade_data.get("price", 0)
+    if price <= 0 or price >= 1:
+        return
+
+    payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
+
+    copy_trade = {
+        "event_slug": trade_data.get("event_slug", ""),
+        "direction": direction,
+        "contract_price": price,
+        "payout_multiplier": payout_multiplier,
+        "stake_usd": FOLLOW_STAKE_USD,
+        "source_wallet": trade_data.get("wallet", ""),
+        "source_name": trade_data.get("name", ""),
+        "source_size": trade_data.get("size", 0),
+        "source_price": price,
+        "tx_hash": trade_data.get("tx_hash", ""),
+        "slug": trade_data.get("slug", ""),
+        "title": trade_data.get("title", ""),
+        "outcome": "pending",
+        "pnl_usd": 0,
+        "bet_placed": True,
+        "mode": "simulation",
+        "time": datetime.now(timezone.utc).isoformat(),
+        "detected_at": trade_data.get("detected_at", time.time()),
+    }
+
+    state.record_follow_trade(copy_trade)
+    print(f"[FOLLOW] Copied: {direction.upper()} @ ${price:.2f} "
+          f"(${FOLLOW_STAKE_USD} stake) from {copy_trade['source_name'] or 'unknown'}")
+
+
 ANALYZE_INTERVAL = 1  # re-analyze every N seconds
 
 
@@ -363,9 +467,10 @@ def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
                             bet_placed_slug = slug
                     last_analyze_time = now
 
-            # Sweep all pending trades every 10s
+            # Sweep all pending trades every 10s (PULSE + Follow)
             if now - last_sweep_time >= 10:
                 resolve_all_pending(btc_feed)
+                resolve_follow_pending(btc_feed)
                 last_sweep_time = now
 
             time.sleep(1)
@@ -393,6 +498,25 @@ async def api_feed_status():
     if _btc_feed:
         return JSONResponse(_btc_feed.get_feed_status())
     return JSONResponse({"error": "feed not initialized"})
+
+
+@app.get("/api/follow")
+async def api_follow():
+    """Follow mode state: trades, stats, P&L."""
+    data = state.get_follow_snapshot()
+    if _follow_feed:
+        data["feed"] = _follow_feed.get_status()
+    else:
+        data["feed"] = {"connected": False, "wallets_count": 0}
+    return JSONResponse(data)
+
+
+@app.get("/api/follow/feed-status")
+async def api_follow_feed_status():
+    """Diagnostic endpoint for follow feed health."""
+    if _follow_feed:
+        return JSONResponse(_follow_feed.get_status())
+    return JSONResponse({"error": "follow feed not initialized"})
 
 
 @app.get("/api/formula")
@@ -495,7 +619,7 @@ def main():
     parser.add_argument("--port", type=int, default=3000)
     args = parser.parse_args()
 
-    global _btc_feed
+    global _btc_feed, _follow_feed
     formula = PulseFormula(df=STUDENT_T_DF)
     btc_feed = BTCFeed(window_seconds=VOL_WINDOW)
     _btc_feed = btc_feed
@@ -503,6 +627,21 @@ def main():
     bot_thread = threading.Thread(target=bot_loop, args=(formula, btc_feed),
                                   daemon=True)
     bot_thread.start()
+
+    # --- Follow Mode ---
+    follow_feed = FollowFeed()
+    _follow_feed = follow_feed
+    if FOLLOW_WALLETS:
+        for wallet in FOLLOW_WALLETS.split(","):
+            wallet = wallet.strip()
+            if wallet:
+                follow_feed.add_wallet(wallet)
+        follow_feed.on_trade = handle_follow_trade
+        follow_feed.start()
+        print(f"  Follow mode: tracking {len(follow_feed.wallets)} wallet(s)")
+        print(f"  Follow stake: ${FOLLOW_STAKE_USD}")
+    else:
+        print("  Follow mode: disabled (no FOLLOW_WALLETS configured)")
 
     print(f"\n  BLACK DELTA / PULSE Dashboard")
     print(f"  http://localhost:{args.port}\n")
