@@ -40,6 +40,7 @@ load_dotenv()
 
 STAKE_USD = float(os.getenv("PULSE_STAKE_USD", "5"))
 MIN_EDGE = float(os.getenv("PULSE_MIN_EDGE", "0.08"))
+MAX_CONTRACT_PRICE = float(os.getenv("PULSE_MAX_CONTRACT_PRICE", "0.15"))
 VOL_WINDOW = int(os.getenv("PULSE_VOLATILITY_WINDOW", "300"))
 STUDENT_T_DF = float(os.getenv("PULSE_STUDENT_T_DF", "4"))
 TAKER_SWITCH_SECONDS = 30
@@ -132,10 +133,11 @@ def analyze_and_update(formula: PulseFormula, btc_feed: BTCFeed, slug: str):
     if best["edge"] < MIN_EDGE:
         best["should_bet"] = False
 
-    # Filter: skip if sigma > 0 (price moving against our bet direction)
-    if best.get("sigma_move", 0) > 0 and best["should_bet"]:
+    # Filter: skip expensive contracts (stay in tail-event territory)
+    # Cheap contracts = high multiplier on win (e.g. 5% → 20x, 10% → 10x)
+    if contract_price > MAX_CONTRACT_PRICE and best["should_bet"]:
         best["should_bet"] = False
-        best["reason"] = "Sigma > 0: price moving against direction"
+        best["reason"] = f"Contract too expensive: {contract_price:.0%} > {MAX_CONTRACT_PRICE:.0%} (multiplier too low)"
 
     # Filter: skip DOWN bets at sigma ≈ 0 (BTC has upward drift at target)
     if (direction == "down" and abs(best.get("sigma_move", 0)) < 0.05
@@ -398,6 +400,7 @@ async def api_formula():
             "student_t_df": STUDENT_T_DF,
             "ewma_lambda": 0.94,
             "min_edge": MIN_EDGE,
+            "max_contract_price": MAX_CONTRACT_PRICE,
             "stake_usd": STAKE_USD,
             "taker_fee": 0.072,
             "maker_fee": 0.0,
