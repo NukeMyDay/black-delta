@@ -48,7 +48,8 @@ MAKER_PRICE_OFFSET = 0.01
 
 # Follow mode config
 FOLLOW_WALLETS = os.getenv("FOLLOW_WALLETS", "")  # comma-separated addresses
-FOLLOW_STAKE_USD = float(os.getenv("FOLLOW_STAKE_USD", str(STAKE_USD)))
+FOLLOW_MULTIPLIER = float(os.getenv("FOLLOW_MULTIPLIER", "1.0"))  # 1.0 = same size as source
+FOLLOW_MAX_STAKE = float(os.getenv("FOLLOW_MAX_STAKE", "50"))     # safety cap per trade
 
 app = FastAPI(title="BLACK DELTA / PULSE")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -372,8 +373,15 @@ def handle_follow_trade(trade_data: dict):
         direction = outcome_raw
 
     price = trade_data.get("price", 0)
+    size = trade_data.get("size", 0)
     if price <= 0 or price >= 1:
         return
+
+    # Proportional stake: source_cost * multiplier, capped at max
+    source_cost = round(price * size, 2)
+    stake = round(source_cost * FOLLOW_MULTIPLIER, 2)
+    stake = min(stake, FOLLOW_MAX_STAKE)
+    stake = max(stake, 0.01)
 
     payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
 
@@ -382,10 +390,11 @@ def handle_follow_trade(trade_data: dict):
         "direction": direction,
         "contract_price": price,
         "payout_multiplier": payout_multiplier,
-        "stake_usd": FOLLOW_STAKE_USD,
+        "stake_usd": stake,
         "source_wallet": trade_data.get("wallet", ""),
         "source_name": trade_data.get("name", ""),
-        "source_size": trade_data.get("size", 0),
+        "source_size": size,
+        "source_cost": source_cost,
         "source_price": price,
         "tx_hash": trade_data.get("tx_hash", ""),
         "slug": trade_data.get("slug", ""),
@@ -400,7 +409,8 @@ def handle_follow_trade(trade_data: dict):
 
     state.record_follow_trade(copy_trade)
     print(f"[FOLLOW] Copied: {direction.upper()} @ ${price:.2f} "
-          f"(${FOLLOW_STAKE_USD} stake) from {copy_trade['source_name'] or 'unknown'}")
+          f"(source ${source_cost:.2f} -> our ${stake:.2f}) "
+          f"from {copy_trade['source_name'] or 'unknown'}")
 
 
 ANALYZE_INTERVAL = 1  # re-analyze every N seconds
@@ -508,6 +518,10 @@ async def api_follow():
         data["feed"] = _follow_feed.get_status()
     else:
         data["feed"] = {"connected": False, "wallets_count": 0}
+    data["config"] = {
+        "multiplier": FOLLOW_MULTIPLIER,
+        "max_stake": FOLLOW_MAX_STAKE,
+    }
     return JSONResponse(data)
 
 
@@ -677,7 +691,7 @@ def main():
     if follow_feed.wallets:
         follow_feed.start()
         print(f"  Follow mode: tracking {len(follow_feed.wallets)} wallet(s)")
-        print(f"  Follow stake: ${FOLLOW_STAKE_USD}")
+        print(f"  Follow multiplier: {FOLLOW_MULTIPLIER}x (max ${FOLLOW_MAX_STAKE})")
     else:
         print("  Follow mode: no wallets configured (add via dashboard)")
 

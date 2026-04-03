@@ -685,8 +685,10 @@
       <span style="color:var(--text-dim);margin-left:12px" id="follow-wallet-count">0 wallets</span>
     </div>
     <div class="follow-status-right">
-      <span style="color:var(--text-dim)">Stake:</span>
-      <span id="follow-stake" style="font-family:'JetBrains Mono',monospace;font-weight:600">$5.00</span>
+      <span style="color:var(--text-dim)">Multiplier:</span>
+      <span id="follow-multiplier" style="font-family:'JetBrains Mono',monospace;font-weight:600">1.0x</span>
+      <span style="color:var(--text-dim);margin-left:8px">Max:</span>
+      <span id="follow-max-stake" style="font-family:'JetBrains Mono',monospace;font-weight:600">$50</span>
     </div>
   </div>
 
@@ -732,7 +734,7 @@
   <div class="section-title" style="margin-top:var(--spacing-lg)">Copy Trades</div>
   <table class="trade-table">
     <thead>
-      <tr><th>Time</th><th>Source</th><th>Market</th><th>Direction</th><th>Price</th><th>Payout</th><th>Stake</th><th>Outcome</th><th>P&L</th></tr>
+      <tr><th>Time</th><th>Source</th><th>Market</th><th>Direction</th><th>Price</th><th>Payout</th><th>Source $</th><th>Our $</th><th>Outcome</th><th>P&L</th></tr>
     </thead>
     <tbody id="follow-trades-body"></tbody>
   </table>
@@ -1308,6 +1310,10 @@ function updateFollowTab(data) {
   document.getElementById('follow-wallet-count').textContent =
     `${feed.wallets_count || 0} wallet${(feed.wallets_count || 0) !== 1 ? 's' : ''}`;
 
+  const cfg = data.config || {};
+  document.getElementById('follow-multiplier').textContent = (cfg.multiplier || 1) + 'x';
+  document.getElementById('follow-max-stake').textContent = '$' + (cfg.max_stake || 50);
+
   // Stats cards
   document.getElementById('follow-capital').textContent = '$' + (capital.current || 1000).toLocaleString('en-US', { minimumFractionDigits: 2 });
   const pnlEl = document.getElementById('follow-pnl');
@@ -1387,7 +1393,8 @@ function updateFollowTab(data) {
         <td><span class="pill ${dirPill}">${dirLabel}</span></td>
         <td style="font-family:'JetBrains Mono',monospace">$${(t.contract_price || 0).toFixed(2)}</td>
         <td style="font-family:'JetBrains Mono',monospace">${(t.payout_multiplier || 0).toFixed(1)}x</td>
-        <td style="font-family:'JetBrains Mono',monospace">$${(t.stake_usd || 0).toFixed(2)}</td>
+        <td style="font-family:'JetBrains Mono',monospace;color:var(--text-dim)">$${(t.source_cost || 0).toFixed(2)}</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-weight:600">$${(t.stake_usd || 0).toFixed(2)}</td>
         <td>${outcomeHtml}</td>
         <td style="font-family:'JetBrains Mono',monospace">${pnlStr}</td>
       </tr>`;
