@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -511,6 +511,37 @@ async def api_follow():
     return JSONResponse(data)
 
 
+@app.post("/api/follow/wallets")
+async def api_follow_add_wallet(request: Request):
+    """Add a wallet to follow."""
+    body = await request.json()
+    address = body.get("address", "").strip()
+    label = body.get("label", "").strip()
+    if not address or not address.startswith("0x") or len(address) < 10:
+        return JSONResponse({"error": "Invalid wallet address"}, status_code=400)
+    if not _follow_feed:
+        return JSONResponse({"error": "Follow feed not initialized"}, status_code=500)
+    info = _follow_feed.add_wallet(address, label)
+    return JSONResponse({"ok": True, "wallet": {
+        "address": info["address"],
+        "label": info.get("label", ""),
+        "proxy_wallet": info.get("proxy_wallet"),
+    }})
+
+
+@app.delete("/api/follow/wallets")
+async def api_follow_remove_wallet(request: Request):
+    """Remove a followed wallet."""
+    body = await request.json()
+    address = body.get("address", "").strip()
+    if not address:
+        return JSONResponse({"error": "Address required"}, status_code=400)
+    if not _follow_feed:
+        return JSONResponse({"error": "Follow feed not initialized"}, status_code=500)
+    _follow_feed.remove_wallet(address)
+    return JSONResponse({"ok": True})
+
+
 @app.get("/api/follow/feed-status")
 async def api_follow_feed_status():
     """Diagnostic endpoint for follow feed health."""
@@ -631,17 +662,24 @@ def main():
     # --- Follow Mode ---
     follow_feed = FollowFeed()
     _follow_feed = follow_feed
+    follow_feed.on_trade = handle_follow_trade
+
+    # Load persisted wallets from disk first
+    follow_feed.load_wallets()
+
+    # Then add any from .env (merges, no duplicates)
     if FOLLOW_WALLETS:
         for wallet in FOLLOW_WALLETS.split(","):
             wallet = wallet.strip()
             if wallet:
                 follow_feed.add_wallet(wallet)
-        follow_feed.on_trade = handle_follow_trade
+
+    if follow_feed.wallets:
         follow_feed.start()
         print(f"  Follow mode: tracking {len(follow_feed.wallets)} wallet(s)")
         print(f"  Follow stake: ${FOLLOW_STAKE_USD}")
     else:
-        print("  Follow mode: disabled (no FOLLOW_WALLETS configured)")
+        print("  Follow mode: no wallets configured (add via dashboard)")
 
     print(f"\n  BLACK DELTA / PULSE Dashboard")
     print(f"  http://localhost:{args.port}\n")

@@ -9,6 +9,7 @@ No authentication required (public trade feed).
 
 import asyncio
 import json
+import os
 import threading
 import time
 
@@ -17,6 +18,7 @@ import websockets
 
 RTDS_WS = "wss://ws-live-data.polymarket.com"
 DATA_API = "https://data-api.polymarket.com"
+WALLETS_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "follow_wallets.json")
 
 # Heartbeat interval (seconds)
 PING_INTERVAL = 5
@@ -50,6 +52,13 @@ class FollowFeed:
     def add_wallet(self, address: str, label: str = "") -> dict:
         """Add a wallet to follow. Resolves proxy wallet automatically."""
         addr = address.lower().strip()
+        if addr in self.wallets:
+            # Update label if wallet already exists
+            if label:
+                self.wallets[addr]["label"] = label
+                self._save_wallets()
+            return self.wallets[addr]
+
         info = {
             "address": addr,
             "label": label,
@@ -67,6 +76,12 @@ class FollowFeed:
 
         self._match_set.add(addr)
         self.wallets[addr] = info
+        self._save_wallets()
+
+        # Auto-start RTDS if this is the first wallet and not yet running
+        if len(self.wallets) == 1 and not self._ws_running:
+            self.start()
+
         print(f"[FOLLOW] Now following {label or addr[:10]}... ({len(self.wallets)} total)")
         return info
 
@@ -78,6 +93,32 @@ class FollowFeed:
             self._match_set.discard(addr)
             if info.get("proxy_wallet"):
                 self._match_set.discard(info["proxy_wallet"])
+            self._save_wallets()
+
+    def load_wallets(self):
+        """Load saved wallets from disk."""
+        try:
+            with open(WALLETS_FILE, "r") as f:
+                saved = json.load(f)
+            for entry in saved:
+                addr = entry["address"].lower().strip()
+                label = entry.get("label", "")
+                self.add_wallet(addr, label)
+            if saved:
+                print(f"[FOLLOW] Loaded {len(saved)} wallet(s) from disk")
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+    def _save_wallets(self):
+        """Persist wallets to disk."""
+        os.makedirs(os.path.dirname(WALLETS_FILE), exist_ok=True)
+        data = [
+            {"address": info["address"], "label": info.get("label", ""),
+             "proxy_wallet": info.get("proxy_wallet")}
+            for info in self.wallets.values()
+        ]
+        with open(WALLETS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
 
     def _resolve_proxy(self, address: str) -> str | None:
         """Resolve a user's proxy wallet via the Polymarket data API."""
@@ -245,9 +286,9 @@ class FollowFeed:
             "wallets_count": len(self.wallets),
             "wallets": [
                 {
-                    "address": info["address"][:10] + "...",
+                    "address": info["address"],
                     "label": info.get("label", ""),
-                    "proxy": (info.get("proxy_wallet") or "")[:10] + "...",
+                    "proxy": info.get("proxy_wallet") or "",
                     "trades": info["trade_count"],
                 }
                 for info in self.wallets.values()

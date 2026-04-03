@@ -374,6 +374,31 @@
       font-family: 'JetBrains Mono', monospace;
       font-variant-numeric: tabular-nums;
     }
+    .follow-add-form {
+      display: flex; gap: 8px; margin-bottom: var(--spacing-md);
+    }
+    .follow-add-form input {
+      flex: 1; background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); padding: 8px 12px; border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      outline: none; transition: border-color 0.15s;
+    }
+    .follow-add-form input:focus { border-color: var(--accent); }
+    .follow-add-form input::placeholder { color: var(--text-dim); }
+    .follow-add-form button {
+      background: var(--accent); color: #fff; border: none;
+      padding: 8px 20px; border-radius: 6px; font-size: 12px;
+      font-weight: 600; cursor: pointer; font-family: inherit;
+      transition: opacity 0.15s; white-space: nowrap;
+    }
+    .follow-add-form button:hover { opacity: 0.85; }
+    .follow-add-form button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .follow-remove-btn {
+      background: none; border: none; color: var(--text-dim);
+      cursor: pointer; font-size: 14px; padding: 2px 6px;
+      border-radius: 4px; transition: all 0.15s;
+    }
+    .follow-remove-btn:hover { color: var(--red); background: rgba(248,113,113,0.1); }
 
     /* --- TRADE HISTORY TABLE --- */
     .trade-table { width: 100%; border-collapse: collapse; }
@@ -689,11 +714,16 @@
     </div>
   </div>
 
-  <!-- Followed Wallets -->
+  <!-- Add Wallet Form -->
   <div class="section-title" style="margin-top:var(--spacing-lg)">Followed Wallets</div>
+  <div class="follow-add-form" id="follow-add-form">
+    <input type="text" id="follow-addr-input" placeholder="0x... wallet address" spellcheck="false">
+    <input type="text" id="follow-label-input" placeholder="Label (optional)" style="max-width:160px">
+    <button id="follow-add-btn" onclick="addFollowWallet()">Add</button>
+  </div>
   <table class="trade-table" id="follow-wallets-table">
     <thead>
-      <tr><th>Label</th><th>Address</th><th>Proxy</th><th>Trades Detected</th></tr>
+      <tr><th>Label</th><th>Address</th><th>Proxy</th><th>Trades</th><th></th></tr>
     </thead>
     <tbody id="follow-wallets-body"></tbody>
   </table>
@@ -1293,13 +1323,15 @@ function updateFollowTab(data) {
   const walletsBody = document.getElementById('follow-wallets-body');
   const wallets = feed.wallets || [];
   if (wallets.length === 0) {
-    walletsBody.innerHTML = '<tr><td colspan="4" style="color:var(--text-dim);text-align:center;padding:20px">No wallets configured</td></tr>';
+    walletsBody.innerHTML = '<tr><td colspan="5" style="color:var(--text-dim);text-align:center;padding:20px">No wallets configured — add one above</td></tr>';
   } else {
+    const truncAddr = a => a ? a.slice(0,6) + '...' + a.slice(-4) : '-';
     walletsBody.innerHTML = wallets.map(w => `<tr>
       <td style="font-weight:600;color:var(--text)">${w.label || '-'}</td>
-      <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${w.address}</td>
-      <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${w.proxy || '-'}</td>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:11px" title="${w.address}">${truncAddr(w.address)}</td>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:11px" title="${w.proxy}">${truncAddr(w.proxy)}</td>
       <td>${w.trades}</td>
+      <td><button class="follow-remove-btn" onclick="removeFollowWallet('${w.address}')" title="Remove">&#x2715;</button></td>
     </tr>`).join('');
   }
 
@@ -1362,6 +1394,58 @@ function updateFollowTab(data) {
     }).join('');
   }
 }
+
+// ============================================================
+//  FOLLOW WALLET MANAGEMENT
+// ============================================================
+async function addFollowWallet() {
+  const addrInput = document.getElementById('follow-addr-input');
+  const labelInput = document.getElementById('follow-label-input');
+  const btn = document.getElementById('follow-add-btn');
+  const address = addrInput.value.trim();
+  if (!address || !address.startsWith('0x')) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Adding...';
+  try {
+    const resp = await fetch('/api/follow/wallets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address, label: labelInput.value.trim() }),
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      addrInput.value = '';
+      labelInput.value = '';
+      pollFollow();
+    } else {
+      alert(data.error || 'Failed to add wallet');
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+  btn.disabled = false;
+  btn.textContent = 'Add';
+}
+
+async function removeFollowWallet(address) {
+  if (!confirm('Remove this wallet?')) return;
+  try {
+    await fetch('/api/follow/wallets', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address }),
+    });
+    pollFollow();
+  } catch (e) {
+    console.error('Remove wallet:', e);
+  }
+}
+
+// Enter key in address input triggers add
+document.getElementById('follow-addr-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addFollowWallet();
+});
 
 // ============================================================
 //  POLL
