@@ -861,8 +861,8 @@ function updatePnlChart(data) {
   const emaPeriod = Math.max(5, Math.min(10, Math.floor(values.length / 3)));
   const emaValues = calcEMA(values, emaPeriod);
   // Color trend line based on direction (last EMA vs 3 points ago)
-  const emaDir = emaValues.length > 3 ? emaValues[emaValues.length - 1] - emaValues[emaValues.length - 4] : 0;
-  const trendColor = emaDir >= 0 ? 'rgba(74,222,128,0.7)' : 'rgba(248,113,113,0.7)';
+  const lastEma = emaValues.length ? emaValues[emaValues.length - 1] : data.capital.start;
+  const trendColor = lastEma >= data.capital.start ? 'rgba(74,222,128,0.7)' : 'rgba(248,113,113,0.7)';
 
   pnlChart.data.labels = labels;
   pnlChart.data.datasets[0].data = values;
@@ -878,7 +878,7 @@ function updatePnlChart(data) {
   pnlChart.options.scales.y.max = Math.ceil(mx + pnlPad);
   pnlChart.update('none');
   document.getElementById('pnl-chart-value').textContent = 'EUR ' + data.capital.current.toLocaleString('en-US', { minimumFractionDigits: 2 });
-  document.getElementById('pnl-chart-value').style.color = emaDir >= 0 ? 'var(--green)' : 'var(--red)';
+  document.getElementById('pnl-chart-value').style.color = data.capital.current >= data.capital.start ? 'var(--green)' : 'var(--red)';
 }
 
 // ============================================================
