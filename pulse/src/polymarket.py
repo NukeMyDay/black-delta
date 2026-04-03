@@ -135,3 +135,34 @@ def fetch_series_events(limit: int = 20) -> list[dict]:
     if resp.status_code != 200:
         return []
     return resp.json() if isinstance(resp.json(), list) else []
+
+
+def fetch_market_outcome(slug: str) -> str | None:
+    """
+    Query the actual Polymarket resolution for a settled market.
+
+    Returns "up" if Up won, "down" if Down won, or None if not yet resolved.
+    This uses the SAME Chainlink-based outcome that Polymarket uses for settlement,
+    so it's the ground truth for WIN/LOSE determination.
+    """
+    try:
+        market = fetch_market(slug)
+        if not market:
+            return None
+
+        outcomes = _parse_json_string(market.get("outcomes", []))
+        prices_raw = _parse_json_string(market.get("outcomePrices", []))
+        prices = [float(p) for p in prices_raw] if prices_raw else []
+
+        if not outcomes or not prices:
+            return None
+
+        # After resolution, winning outcome price = 1.0, losing = 0.0
+        for i, price in enumerate(prices):
+            if price >= 0.99:  # winner
+                winner = outcomes[i].lower()
+                return winner
+
+        return None  # not yet resolved
+    except Exception:
+        return None

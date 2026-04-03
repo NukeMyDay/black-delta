@@ -332,12 +332,22 @@
     .raw-data-wrap {
       background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
       margin-bottom: var(--spacing-lg); max-height: 400px; overflow: auto; display: none;
+      position: relative;
     }
     .raw-data-wrap pre {
-      padding: var(--spacing-md); margin: 0;
+      padding: var(--spacing-md); padding-top: 40px; margin: 0;
       font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.5;
       color: var(--text-secondary); white-space: pre; tab-size: 2;
     }
+    .raw-copy-btn {
+      position: sticky; top: 0; float: right;
+      margin: 8px 8px 0 0; z-index: 2;
+      background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border);
+      padding: 5px 14px; border-radius: 5px; font-size: 11px; font-weight: 500;
+      cursor: pointer; font-family: inherit; transition: all 0.15s;
+    }
+    .raw-copy-btn:hover { background: var(--border-light); color: var(--text); }
+    .raw-copy-btn.copied { background: rgba(74,222,128,0.1); color: var(--green); border-color: rgba(74,222,128,0.3); }
 
     /* --- STRATEGY TAB --- */
     .strategy-overview {
@@ -351,9 +361,11 @@
     .pipeline-step {
       display: grid; grid-template-columns: 48px 1fr;
       gap: 0 var(--spacing-md); margin-bottom: 0;
+      position: relative;
     }
     .pipeline-marker {
       display: flex; flex-direction: column; align-items: center;
+      justify-self: center;
     }
     .step-number {
       display: flex; align-items: center; justify-content: center;
@@ -522,18 +534,14 @@
   <div class="export-toolbar">
     <div class="section-title" style="margin-bottom:0">Trade Historie</div>
     <div class="export-buttons">
-      <button class="export-btn" id="copy-csv-btn" onclick="copyTradesAs('csv')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-        CSV
-      </button>
-      <button class="export-btn" id="copy-json-btn" onclick="copyTradesAs('json')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-        JSON
-      </button>
-      <button class="export-btn" id="toggle-raw-btn" onclick="toggleRawView()">Raw</button>
+      <button class="export-btn" id="btn-csv" onclick="toggleExport('csv')">CSV</button>
+      <button class="export-btn" id="btn-json" onclick="toggleExport('json')">JSON</button>
     </div>
   </div>
-  <div class="raw-data-wrap" id="raw-data-wrap"><pre id="raw-data-pre"></pre></div>
+  <div class="raw-data-wrap" id="export-panel">
+    <button class="raw-copy-btn" id="export-copy-btn" onclick="copyExportPanel()">Kopieren</button>
+    <pre id="export-pre"></pre>
+  </div>
   <table class="trade-table">
     <thead>
       <tr><th>Zeit</th><th>Contract</th><th>Richtung</th><th>Order</th><th>BTC</th><th>Target</th><th>Edge</th><th>EV/Dollar</th><th>Sigma</th><th>Outcome</th><th>P&L</th></tr>
@@ -553,9 +561,9 @@
 </div>
 
 <div id="tab-strategy" class="content hidden">
+  <div class="section-title">Aktive Parameter</div>
+  <div class="param-grid" id="strategy-params" style="margin-bottom:var(--spacing-xl)"></div>
   <div id="strategy-content"><div style="color: var(--text-dim)">Lade Strategie...</div></div>
-  <div class="section-title" style="margin-top:var(--spacing-lg)">Aktive Parameter</div>
-  <div class="param-grid" id="strategy-params"></div>
 </div>
 
 <script>
@@ -849,8 +857,10 @@ function updateTradeHistory(data) {
 }
 
 // ============================================================
-//  EXPORT (CSV / JSON)
+//  EXPORT (CSV / JSON toggle panels)
 // ============================================================
+let activeExportFmt = null;
+
 function getTradesForExport() {
   if (!lastData) return [];
   return lastData.recent_trades.filter(t => t.bet_placed).map(t => ({
@@ -880,30 +890,64 @@ function tradesToCSV(trades) {
   return rows.join('\n');
 }
 
-function copyTradesAs(fmt) {
+function toggleExport(fmt) {
+  const panel = document.getElementById('export-panel');
+  const pre = document.getElementById('export-pre');
+  const btnCsv = document.getElementById('btn-csv');
+  const btnJson = document.getElementById('btn-json');
+
+  // Toggle off if same button clicked
+  if (activeExportFmt === fmt) {
+    panel.style.display = 'none';
+    btnCsv.classList.remove('copied');
+    btnJson.classList.remove('copied');
+    activeExportFmt = null;
+    return;
+  }
+
   const trades = getTradesForExport();
   const text = fmt === 'json' ? JSON.stringify(trades, null, 2) : tradesToCSV(trades);
-  navigator.clipboard.writeText(text).then(() => {
-    const btn = document.getElementById(fmt === 'json' ? 'copy-json-btn' : 'copy-csv-btn');
-    btn.classList.add('copied');
-    const orig = btn.innerHTML;
-    btn.innerHTML = btn.innerHTML.replace(fmt.toUpperCase(), 'Kopiert!');
-    setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = orig; }, 1500);
-  });
+  pre.textContent = text;
+  panel.style.display = 'block';
+  activeExportFmt = fmt;
+
+  btnCsv.classList.toggle('copied', fmt === 'csv');
+  btnJson.classList.toggle('copied', fmt === 'json');
+
+  // Reset copy button
+  const copyBtn = document.getElementById('export-copy-btn');
+  copyBtn.textContent = 'Kopieren';
+  copyBtn.classList.remove('copied');
 }
 
-function toggleRawView() {
-  const wrap = document.getElementById('raw-data-wrap');
-  const btn = document.getElementById('toggle-raw-btn');
-  if (wrap.style.display === 'none' || !wrap.style.display) {
-    const trades = getTradesForExport();
-    document.getElementById('raw-data-pre').textContent = JSON.stringify(trades, null, 2);
-    wrap.style.display = 'block';
-    btn.classList.add('copied');
+function copyExportPanel() {
+  const pre = document.getElementById('export-pre');
+  const btn = document.getElementById('export-copy-btn');
+  const text = pre.textContent;
+
+  // Try clipboard API, fallback to selection
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => showCopied(btn)).catch(() => fallbackCopy(pre, btn));
   } else {
-    wrap.style.display = 'none';
-    btn.classList.remove('copied');
+    fallbackCopy(pre, btn);
   }
+}
+
+function fallbackCopy(pre, btn) {
+  const range = document.createRange();
+  range.selectNodeContents(pre);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  try { document.execCommand('copy'); showCopied(btn); }
+  catch (e) { btn.textContent = 'Manuell kopieren (Ctrl+C)'; }
+  sel.removeAllRanges();
+}
+
+function showCopied(btn) {
+  btn.textContent = 'Kopiert!';
+  btn.classList.add('copied');
+  setTimeout(() => { btn.textContent = 'Kopieren'; btn.classList.remove('copied'); }, 2000);
 }
 
 // ============================================================

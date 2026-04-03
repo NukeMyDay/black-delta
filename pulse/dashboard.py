@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from src.polymarket import (
     fetch_event,
     fetch_market,
+    fetch_market_outcome,
     fetch_midpoint,
     fetch_orderbook,
     get_current_event_slug,
@@ -208,11 +209,33 @@ def analyze_and_update(formula: PulseFormula, btc_feed: BTCFeed, slug: str):
 
 
 def resolve_previous_window(btc_feed: BTCFeed, slug: str):
-    """Check the outcome of the previous window and resolve pending trades."""
+    """Check outcome of previous window. Tries Polymarket first, Binance fallback."""
     prev_ts = int(slug.split("-")[-1]) - 300
     prev_slug = f"btc-updown-5m-{prev_ts}"
 
-    # Get the close price for the previous window (= open of current)
+    # Check if we have pending trades for this slug
+    has_pending = any(
+        t.get("event_slug") == prev_slug
+        and t.get("outcome") == "pending"
+        and t.get("bet_placed")
+        for t in state.trades
+    )
+    if not has_pending:
+        return
+
+    # Primary: Polymarket actual outcome (Chainlink truth)
+    market_winner = fetch_market_outcome(prev_slug)
+    if market_winner:
+        for trade in state.trades:
+            if (trade.get("event_slug") == prev_slug
+                    and trade.get("outcome") == "pending"
+                    and trade.get("bet_placed")):
+                won = (trade.get("direction") == market_winner)
+                outcome = "win" if won else "lose"
+                state.resolve_trade(prev_slug, outcome, 0)
+        return
+
+    # Fallback: Binance price comparison
     current_start_ts = int(slug.split("-")[-1])
     close_price = btc_feed.fetch_price_at_time(current_start_ts * 1000)
     open_price = btc_feed.fetch_price_at_time(prev_ts * 1000)
@@ -232,7 +255,10 @@ def resolve_previous_window(btc_feed: BTCFeed, slug: str):
 
 
 def resolve_all_pending(btc_feed: BTCFeed):
-    """Sweep ALL pending trades and try to resolve them (retry for API failures)."""
+    """Sweep ALL pending trades and resolve using Polymarket's actual outcome.
+
+    Priority: Polymarket Gamma API (Chainlink truth) > Binance fallback.
+    """
     now = time.time()
     pending = [t for t in state.trades
                if t.get("outcome") == "pending" and t.get("bet_placed")]
@@ -245,21 +271,32 @@ def resolve_all_pending(btc_feed: BTCFeed):
             window_start_ts = int(slug.split("-")[-1])
             window_end_ts = window_start_ts + 300
 
-            # Only resolve if window has fully closed (10s buffer)
-            if now < window_end_ts + 10:
+            # Only resolve if window has fully closed (buffer for settlement)
+            if now < window_end_ts + 30:
                 continue
 
-            open_price = btc_feed.fetch_price_at_time(window_start_ts * 1000)
-            close_price = btc_feed.fetch_price_at_time(window_end_ts * 1000)
+            direction = trade.get("direction")
+            resolved = False
 
-            if open_price and close_price:
-                direction = trade.get("direction")
-                if direction == "down":
-                    won = close_price < open_price
-                else:
-                    won = close_price >= open_price
+            # Primary: query Polymarket for the actual Chainlink-based outcome
+            market_winner = fetch_market_outcome(slug)
+            if market_winner:
+                won = (direction == market_winner)
                 outcome = "win" if won else "lose"
-                state.resolve_trade(slug, outcome, close_price)
+                state.resolve_trade(slug, outcome, 0)
+                resolved = True
+
+            # Fallback: Binance price comparison (if Polymarket not yet settled)
+            if not resolved and now > window_end_ts + 180:
+                open_price = btc_feed.fetch_price_at_time(window_start_ts * 1000)
+                close_price = btc_feed.fetch_price_at_time(window_end_ts * 1000)
+                if open_price and close_price:
+                    if direction == "down":
+                        won = close_price < open_price
+                    else:
+                        won = close_price >= open_price
+                    outcome = "win" if won else "lose"
+                    state.resolve_trade(slug, outcome, close_price)
         except (ValueError, IndexError):
             continue
 
