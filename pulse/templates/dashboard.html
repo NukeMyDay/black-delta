@@ -435,8 +435,11 @@
     }
     .sizing-info input:focus { border-color: var(--accent); }
     .follow-trades-header {
-      display: flex; align-items: center; gap: 12px; margin-top: var(--spacing-lg);
-      margin-bottom: var(--spacing-md); flex-wrap: wrap;
+      display: flex; flex-direction: column; gap: 8px;
+      margin-top: var(--spacing-lg); margin-bottom: var(--spacing-md);
+    }
+    .follow-trades-title-row {
+      display: flex; align-items: center; gap: 10px;
     }
     .follow-filters { display: flex; gap: 3px; }
     .follow-filter-btn {
@@ -817,7 +820,10 @@
 
   <!-- Follow Trades -->
   <div class="follow-trades-header">
-    <div class="section-title" style="margin-bottom:0">Copied Trades</div>
+    <div class="follow-trades-title-row">
+      <div class="section-title" style="margin-bottom:0">Copied Trades</div>
+      <span class="follow-trade-count" id="follow-trade-count"></span>
+    </div>
     <div class="follow-filters">
       <button class="follow-filter-btn active" data-filter="all" onclick="setFollowFilter('all')">All</button>
       <button class="follow-filter-btn" data-filter="btc" onclick="setFollowFilter('btc')">BTC</button>
@@ -828,7 +834,6 @@
       <button class="follow-filter-btn" data-filter="closed" onclick="setFollowFilter('closed')">Closed</button>
       <button class="follow-filter-btn" data-filter="pending" onclick="setFollowFilter('pending')">Pending</button>
     </div>
-    <span class="follow-trade-count" id="follow-trade-count"></span>
   </div>
   <table class="trade-table">
     <thead>
