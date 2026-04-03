@@ -10,6 +10,9 @@ Usage:
 """
 
 import argparse
+import csv
+import io
+import json
 import os
 import threading
 import time
@@ -18,7 +21,7 @@ from datetime import datetime, timezone
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from src.polymarket import (
@@ -441,6 +444,7 @@ def _handle_follow_sell(trade_data: dict, direction: str, sell_price: float,
 
     Passes sell_size so state can do proportional (partial) closes.
     """
+    state.record_follow_sell_event()
     closed = state.close_follow_trades(event_slug, direction, sell_price, sell_size)
     if closed > 0:
         name = trade_data.get("name", "") or "unknown"
@@ -609,6 +613,33 @@ async def api_follow_remove_wallet(request: Request):
         return JSONResponse({"error": "Follow feed not initialized"}, status_code=500)
     _follow_feed.remove_wallet(address)
     return JSONResponse({"ok": True})
+
+
+@app.get("/api/follow/export")
+async def api_follow_export(format: str = "csv"):
+    """Export all copied trades as CSV or JSON."""
+    trades = list(state.follow_trades)
+    if format == "json":
+        content = json.dumps(trades, indent=2)
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=copied_trades.json"},
+        )
+    # CSV
+    fields = ["time", "event_slug", "title", "direction", "contract_price",
+              "payout_multiplier", "source_cost", "stake_usd", "outcome",
+              "pnl_usd", "sell_price", "source_wallet", "source_name",
+              "source_size", "tx_hash"]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(trades)
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=copied_trades.csv"},
+    )
 
 
 @app.get("/api/follow/feed-status")

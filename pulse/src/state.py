@@ -57,7 +57,8 @@ class PulseState:
         self.follow_capital = start_capital
         self.follow_start_capital = start_capital
         self.follow_total_bets = 0
-        self.follow_total_sells = 0
+        self.follow_sell_events = 0   # SELL events received from source (1 per RTDS SELL)
+        self.follow_total_sells = 0   # close operations (can be > sell_events due to partial)
         self.follow_wins = 0
         self.follow_losses = 0
         self.follow_pnl = 0.0
@@ -123,6 +124,11 @@ class PulseState:
     # ------------------------------------------------------------------
     #  Follow Mode
     # ------------------------------------------------------------------
+    def record_follow_sell_event(self):
+        """Count one SELL event received from the source user."""
+        with self._lock:
+            self.follow_sell_events += 1
+
     def record_follow_trade(self, trade: dict):
         """Record a copy-trade from a followed wallet."""
         with self._lock:
@@ -295,6 +301,7 @@ class PulseState:
                 "follow_capital": self.follow_capital,
                 "follow_start_capital": self.follow_start_capital,
                 "follow_total_bets": self.follow_total_bets,
+                "follow_sell_events": self.follow_sell_events,
                 "follow_total_sells": self.follow_total_sells,
                 "follow_wins": self.follow_wins,
                 "follow_losses": self.follow_losses,
@@ -321,6 +328,7 @@ class PulseState:
             self.follow_capital = data.get("follow_capital", self.follow_capital)
             self.follow_start_capital = data.get("follow_start_capital", self.follow_start_capital)
             self.follow_total_bets = data.get("follow_total_bets", 0)
+            self.follow_sell_events = data.get("follow_sell_events", 0)
             self.follow_total_sells = data.get("follow_total_sells", 0)
             self.follow_wins = data.get("follow_wins", 0)
             self.follow_losses = data.get("follow_losses", 0)
@@ -350,7 +358,7 @@ class PulseState:
                 },
                 "stats": {
                     "total_bets": self.follow_total_bets,
-                    "total_sells": self.follow_total_sells,
+                    "total_sells": self.follow_sell_events,
                     "wins": self.follow_wins,
                     "losses": self.follow_losses,
                     "win_rate": round(win_rate, 1),

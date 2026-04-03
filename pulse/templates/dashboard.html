@@ -823,6 +823,10 @@
     <div class="follow-trades-title-row">
       <div class="section-title" style="margin-bottom:0">Copied Trades</div>
       <span class="follow-trade-count" id="follow-trade-count"></span>
+      <div style="margin-left:auto;display:flex;gap:6px">
+        <a href="/api/follow/export?format=csv" download class="follow-filter-btn" style="text-decoration:none">↓ CSV</a>
+        <a href="/api/follow/export?format=json" download class="follow-filter-btn" style="text-decoration:none">↓ JSON</a>
+      </div>
     </div>
     <div class="follow-filters">
       <button class="follow-filter-btn active" data-filter="all" onclick="setFollowFilter('all')">All</button>
@@ -1457,7 +1461,7 @@ function updateFollowTab(data) {
   document.getElementById('follow-capital').textContent = isSim ? '-' : '$' + (capital.current || 1000).toLocaleString('en-US', { minimumFractionDigits: 2 });
   const pnlEl = document.getElementById('follow-pnl');
   const pnl = capital.pnl || 0;
-  pnlEl.textContent = isSim ? '-' : (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+  pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
   pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
 
   document.getElementById('follow-bets').textContent = stats.total_bets || 0;
