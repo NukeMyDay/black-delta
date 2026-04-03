@@ -53,6 +53,7 @@ class PulseState:
         self.follow_capital = start_capital
         self.follow_start_capital = start_capital
         self.follow_total_bets = 0
+        self.follow_total_sells = 0
         self.follow_wins = 0
         self.follow_losses = 0
         self.follow_pnl = 0.0
@@ -275,6 +276,7 @@ class PulseState:
                 self.follow_trades.appendleft(split)
 
             if closed > 0:
+                self.follow_total_sells += closed
                 self.follow_pnl_curve.append({
                     "time": datetime.now(timezone.utc).isoformat(),
                     "capital": round(self.follow_capital, 2),
@@ -297,6 +299,7 @@ class PulseState:
                 },
                 "stats": {
                     "total_bets": self.follow_total_bets,
+                    "total_sells": self.follow_total_sells,
                     "wins": self.follow_wins,
                     "losses": self.follow_losses,
                     "win_rate": round(win_rate, 1),

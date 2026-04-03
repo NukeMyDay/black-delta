@@ -358,7 +358,7 @@
     }
     .follow-status-dot.connected { background: var(--green); animation: pulse 2s ease-in-out infinite; }
     .follow-stats {
-      display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--spacing-sm);
+      display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--spacing-sm);
       margin-bottom: var(--spacing-md);
     }
     .follow-stat-card {
@@ -786,6 +786,10 @@
     <div class="follow-stat-card">
       <div class="follow-stat-label">Bets</div>
       <div class="follow-stat-value" id="follow-bets">0</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Sells</div>
+      <div class="follow-stat-value" id="follow-sells">0</div>
     </div>
     <div class="follow-stat-card">
       <div class="follow-stat-label">Win Rate</div>
@@ -1452,6 +1456,7 @@ function updateFollowTab(data) {
   pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
 
   document.getElementById('follow-bets').textContent = stats.total_bets || 0;
+  document.getElementById('follow-sells').textContent = stats.total_sells || 0;
   document.getElementById('follow-winrate').textContent = stats.total_bets > 0 ? stats.win_rate + '%' : '-';
   document.getElementById('follow-pending').textContent = stats.pending || 0;
 
