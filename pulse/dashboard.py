@@ -66,6 +66,7 @@ _follow_config = {
     "auto_fraction": FOLLOW_AUTO_FRACTION,
     "multiplier": FOLLOW_MULTIPLIER,
     "max_stake": FOLLOW_MAX_STAKE,
+    "simulation": True,  # True = simulation (1:1 copy), False = real (sized by auto/manual)
 }
 
 
@@ -317,55 +318,57 @@ def resolve_all_pending(btc_feed: BTCFeed):
 
 
 def resolve_follow_pending(btc_feed: BTCFeed):
-    """Sweep pending follow trades and resolve them."""
+    """Sweep pending follow trades, grouped by slug to minimize API calls."""
     now = time.time()
     pending = [t for t in state.follow_trades
                if t.get("outcome") == "pending"]
 
+    # Group by slug — one API call per unique slug
+    slugs_seen: dict[str, bool] = {}  # slug -> resolved?
+
     for trade in pending:
         slug = trade.get("event_slug")
-        if not slug:
+        if not slug or slug in slugs_seen:
             continue
+
         try:
-            # Extract window timing from slug
             parts = slug.split("-")
             window_start_ts = int(parts[-1])
-            # Determine window duration from slug pattern
             if "15m" in slug:
                 window_dur = 900
             elif "5m" in slug:
                 window_dur = 300
+            elif "1h" in slug:
+                window_dur = 3600
             else:
-                window_dur = 300  # default
+                window_dur = 300
             window_end_ts = window_start_ts + window_dur
 
             if now < window_end_ts + 15:
+                slugs_seen[slug] = False
                 continue
 
-            direction = trade.get("direction")
-            resolved = False
-
-            # Primary: Polymarket outcome
+            # Primary: Polymarket outcome (one call per slug)
             market_winner = fetch_market_outcome(slug)
             if market_winner:
-                won = (direction == market_winner)
-                outcome = "win" if won else "lose"
-                state.resolve_follow_trade(slug, outcome, 0)
-                resolved = True
+                # Pass the winner direction — resolve_follow_trade handles per-trade win/lose
+                state.resolve_follow_trade(slug, market_winner, 0)
+                slugs_seen[slug] = True
+                continue
 
-            # Fallback: Binance
-            if not resolved and now > window_end_ts + 180:
+            # Fallback: Binance (only for BTC markets, after 3 min buffer)
+            if not market_winner and now > window_end_ts + 180 and "btc" in slug:
                 open_price = btc_feed.fetch_price_at_time(window_start_ts * 1000)
                 close_price = btc_feed.fetch_price_at_time(window_end_ts * 1000)
                 if open_price and close_price:
-                    if direction == "down":
-                        won = close_price < open_price
-                    else:
-                        won = close_price >= open_price
-                    outcome = "win" if won else "lose"
-                    state.resolve_follow_trade(slug, outcome, close_price)
+                    winner = "down" if close_price < open_price else "up"
+                    state.resolve_follow_trade(slug, winner, close_price)
+                    slugs_seen[slug] = True
+                    continue
+
+            slugs_seen[slug] = False
         except (ValueError, IndexError):
-            continue
+            slugs_seen[slug] = False
 
 
 def handle_follow_trade(trade_data: dict):
@@ -389,15 +392,19 @@ def handle_follow_trade(trade_data: dict):
 
     source_cost = round(price * size, 2)
 
-    if _follow_config["auto_mode"]:
+    if _follow_config["simulation"]:
+        # Simulation: 1:1 copy of source bet (track their actual performance)
+        stake = source_cost
+    elif _follow_config["auto_mode"]:
         # Auto: fraction of current capital per bet
         fraction = _follow_config["auto_fraction"]
         stake = round(state.follow_capital * fraction, 2)
+        stake = min(stake, _follow_config["max_stake"])
     else:
         # Manual: proportional to source with multiplier
         stake = round(source_cost * _follow_config["multiplier"], 2)
+        stake = min(stake, _follow_config["max_stake"])
 
-    stake = min(stake, _follow_config["max_stake"])
     stake = max(stake, 0.01)
 
     payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
@@ -564,6 +571,8 @@ async def api_follow_add_wallet(request: Request):
 async def api_follow_update_config(request: Request):
     """Update follow config at runtime (auto_mode, fraction, multiplier, max)."""
     body = await request.json()
+    if "simulation" in body:
+        _follow_config["simulation"] = bool(body["simulation"])
     if "auto_mode" in body:
         _follow_config["auto_mode"] = bool(body["auto_mode"])
     if "auto_fraction" in body:

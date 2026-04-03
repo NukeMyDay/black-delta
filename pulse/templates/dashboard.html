@@ -719,14 +719,16 @@
       <span id="follow-conn-label">Disconnected</span>
       <span style="color:var(--text-dim);margin-left:12px" id="follow-wallet-count">0 wallets</span>
     </div>
-    <div class="follow-status-right">
-      <span style="color:var(--text-dim)">Max:</span>
-      <span id="follow-max-stake" style="font-family:'JetBrains Mono',monospace;font-weight:600">$50</span>
+    <div class="follow-status-right" style="display:flex;align-items:center;gap:12px">
+      <div class="follow-sizing-toggle" id="follow-mode-toggle">
+        <button class="sizing-btn active" id="mode-sim-btn" onclick="setFollowMode(true)">Simulation</button>
+        <button class="sizing-btn" id="mode-real-btn" onclick="setFollowMode(false)">Real</button>
+      </div>
     </div>
   </div>
 
-  <!-- Sizing Mode -->
-  <div class="follow-sizing-bar" id="follow-sizing-bar">
+  <!-- Sizing Mode (only visible in Real mode) -->
+  <div class="follow-sizing-bar" id="follow-sizing-bar" style="display:none">
     <div class="follow-sizing-toggle">
       <button class="sizing-btn active" id="sizing-auto-btn" onclick="setFollowSizing('auto')">Auto</button>
       <button class="sizing-btn" id="sizing-manual-btn" onclick="setFollowSizing('manual')">Manual</button>
@@ -1373,7 +1375,12 @@ function updateFollowTab(data) {
     `${feed.wallets_count || 0} wallet${(feed.wallets_count || 0) !== 1 ? 's' : ''}`;
 
   const cfg = data.config || {};
-  document.getElementById('follow-max-stake').textContent = '$' + (cfg.max_stake || 50);
+
+  // Sync simulation/real toggle
+  const isSim = cfg.simulation !== false;
+  document.getElementById('mode-sim-btn').classList.toggle('active', isSim);
+  document.getElementById('mode-real-btn').classList.toggle('active', !isSim);
+  document.getElementById('follow-sizing-bar').style.display = isSim ? 'none' : 'flex';
 
   // Sync sizing UI with server state
   const isAuto = cfg.auto_mode !== false;
@@ -1485,6 +1492,19 @@ function updateFollowTab(data) {
 // ============================================================
 //  FOLLOW SIZING CONTROLS
 // ============================================================
+async function setFollowMode(simulation) {
+  document.getElementById('mode-sim-btn').classList.toggle('active', simulation);
+  document.getElementById('mode-real-btn').classList.toggle('active', !simulation);
+  document.getElementById('follow-sizing-bar').style.display = simulation ? 'none' : 'flex';
+  try {
+    await fetch('/api/follow/config', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ simulation }),
+    });
+    pollFollow();
+  } catch (e) { console.error('Set mode:', e); }
+}
+
 async function setFollowSizing(mode) {
   const isAuto = mode === 'auto';
   document.getElementById('sizing-auto-btn').classList.toggle('active', isAuto);

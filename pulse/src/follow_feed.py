@@ -167,8 +167,11 @@ class FollowFeed:
         """Connect to Polymarket RTDS with auto-reconnect."""
         while self._ws_running:
             try:
-                async with websockets.connect(RTDS_WS, ping_interval=None) as ws:
+                async with websockets.connect(
+                    RTDS_WS, ping_interval=20, ping_timeout=10,
+                ) as ws:
                     self._ws_connected = True
+                    self._last_msg_ts = time.time()
                     print("[FOLLOW] Connected to Polymarket RTDS")
 
                     # Subscribe to all trade activity
@@ -181,24 +184,46 @@ class FollowFeed:
                     })
                     await ws.send(sub_msg)
 
-                    # Run heartbeat + message loop concurrently
-                    await asyncio.gather(
-                        self._heartbeat(ws),
-                        self._read_loop(ws),
+                    # Run heartbeat, reader, and watchdog concurrently
+                    # FIRST_COMPLETED: if any task exits, reconnect
+                    done, pending = await asyncio.wait(
+                        [
+                            asyncio.ensure_future(self._heartbeat(ws)),
+                            asyncio.ensure_future(self._read_loop(ws)),
+                            asyncio.ensure_future(self._watchdog(ws)),
+                        ],
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
+                    # Cancel remaining tasks
+                    for task in pending:
+                        task.cancel()
+                    # Check if any raised
+                    for task in done:
+                        if task.exception():
+                            raise task.exception()
+
             except Exception as e:
                 self._ws_connected = False
                 print(f"[FOLLOW] RTDS disconnected: {e}, reconnecting in 3s...")
                 await asyncio.sleep(3)
 
     async def _heartbeat(self, ws):
-        """Send ping every PING_INTERVAL seconds."""
+        """Send text 'ping' every PING_INTERVAL seconds (RTDS protocol)."""
         while self._ws_running:
             try:
                 await ws.send("ping")
             except Exception:
-                break
+                return
             await asyncio.sleep(PING_INTERVAL)
+
+    async def _watchdog(self, ws):
+        """Force reconnect if no messages received for 30+ seconds."""
+        while self._ws_running:
+            await asyncio.sleep(10)
+            if self._last_msg_ts > 0 and (time.time() - self._last_msg_ts) > 30:
+                print("[FOLLOW] Watchdog: no messages for 30s, forcing reconnect")
+                await ws.close()
+                return
 
     async def _read_loop(self, ws):
         """Read messages from RTDS and filter for followed wallets."""

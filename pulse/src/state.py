@@ -131,15 +131,24 @@ class PulseState:
             self.follow_total_bets += 1
 
     def resolve_follow_trade(self, event_slug: str, outcome: str, _btc_close: float):
-        """Resolve a pending follow trade."""
+        """Resolve ALL pending follow trades for a given slug."""
         with self._lock:
+            resolved_any = False
             for trade in self.follow_trades:
                 if (trade.get("event_slug") == event_slug
                         and trade.get("outcome") == "pending"):
-                    trade["outcome"] = outcome
+                    direction = trade.get("direction")
+                    # Determine win/lose per trade based on its direction
+                    if outcome in ("win", "lose"):
+                        trade_outcome = outcome
+                    else:
+                        # outcome is the market winner ("up"/"down")
+                        trade_outcome = "win" if direction == outcome else "lose"
+
+                    trade["outcome"] = trade_outcome
                     stake = trade.get("stake_usd", 0)
                     multiplier = trade.get("payout_multiplier", 0)
-                    if outcome == "win":
+                    if trade_outcome == "win":
                         pnl = stake * (multiplier - 1)
                         self.follow_wins += 1
                     else:
@@ -148,13 +157,14 @@ class PulseState:
                     trade["pnl_usd"] = round(pnl, 2)
                     self.follow_pnl += pnl
                     self.follow_capital += pnl
+                    resolved_any = True
 
-                    self.follow_pnl_curve.append({
-                        "time": datetime.now(timezone.utc).isoformat(),
-                        "capital": round(self.follow_capital, 2),
-                        "pnl": round(self.follow_pnl, 2),
-                    })
-                    break
+            if resolved_any:
+                self.follow_pnl_curve.append({
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "capital": round(self.follow_capital, 2),
+                    "pnl": round(self.follow_pnl, 2),
+                })
 
     def get_follow_snapshot(self) -> dict:
         """Return follow-mode state for the API."""
