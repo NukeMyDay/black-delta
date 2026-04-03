@@ -135,6 +135,8 @@
       justify-content: space-between;
       align-items: center;
       margin-bottom: var(--spacing-md);
+      flex-wrap: wrap;
+      gap: 6px;
     }
     .chart-header h3 {
       font-size: 11px; color: var(--text-dim);
@@ -144,6 +146,20 @@
       font-size: 14px; font-weight: 700;
       font-variant-numeric: tabular-nums;
       font-family: 'JetBrains Mono', monospace;
+    }
+    .chart-filters {
+      display: flex; gap: 2px; order: 3; width: 100%;
+    }
+    .chart-filter-btn {
+      background: none; border: 1px solid transparent;
+      color: var(--text-dim); font-size: 10px; font-weight: 600;
+      padding: 3px 8px; border-radius: 4px; cursor: pointer;
+      font-family: inherit; letter-spacing: 0.3px; transition: all 0.15s;
+    }
+    .chart-filter-btn:hover { color: var(--text); background: var(--surface-2); }
+    .chart-filter-btn.active {
+      color: var(--text); background: var(--surface-2);
+      border-color: var(--border);
     }
 
 
@@ -483,6 +499,14 @@
       <div class="chart-header">
         <h3>Capital Performance</h3>
         <span id="pnl-chart-value" class="chart-value" style="color:var(--accent)">EUR 1,000</span>
+        <div class="chart-filters" id="chart-filters">
+          <button class="chart-filter-btn" data-range="today">Today</button>
+          <button class="chart-filter-btn" data-range="week">This Week</button>
+          <button class="chart-filter-btn" data-range="month">This Month</button>
+          <button class="chart-filter-btn" data-range="ytd">YTD</button>
+          <button class="chart-filter-btn" data-range="year">This Year</button>
+          <button class="chart-filter-btn active" data-range="all">All</button>
+        </div>
       </div>
       <div style="position:relative; height:240px;">
         <canvas id="pnl-chart"></canvas>
@@ -607,6 +631,7 @@
 let pnlChart = null;
 let currentTab = 'live';
 let lastData = null;
+let chartTimeRange = 'all';
 const POLL_MS = 1000;
 const HISTORY_PAGE_SIZE = 20;
 let historyVisible = HISTORY_PAGE_SIZE;
@@ -670,6 +695,43 @@ function initCharts() {
   });
 
 }
+
+// Chart time range filter
+function getTimeRangeCutoff(range) {
+  const now = new Date();
+  switch (range) {
+    case 'today': {
+      const d = new Date(now); d.setHours(0,0,0,0);
+      return d.getTime();
+    }
+    case 'week': {
+      const d = new Date(now);
+      d.setDate(d.getDate() - d.getDay());
+      d.setHours(0,0,0,0);
+      return d.getTime();
+    }
+    case 'month': {
+      const d = new Date(now.getFullYear(), now.getMonth(), 1);
+      return d.getTime();
+    }
+    case 'ytd': {
+      return new Date(now.getFullYear(), 0, 1).getTime();
+    }
+    case 'year': {
+      return now.getTime() - 365 * 24 * 60 * 60 * 1000;
+    }
+    default: return 0;
+  }
+}
+
+document.getElementById('chart-filters').addEventListener('click', e => {
+  const btn = e.target.closest('.chart-filter-btn');
+  if (!btn) return;
+  chartTimeRange = btn.dataset.range;
+  document.querySelectorAll('.chart-filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (lastData) updatePnlChart(lastData);
+});
 
 // ============================================================
 //  BTC PRICE TEXT UPDATE (chart removed, text kept)
@@ -845,7 +907,10 @@ function calcEMA(data, period) {
 
 function updatePnlChart(data) {
   if (!pnlChart) return;
-  const curve = data.pnl_curve;
+  const cutoff = getTimeRangeCutoff(chartTimeRange);
+  const curve = cutoff > 0
+    ? data.pnl_curve.filter(p => new Date(p.time).getTime() >= cutoff)
+    : data.pnl_curve;
   const now = new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' });
   const labels = curve.map(p => new Date(p.time).toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' }));
   const values = curve.map(p => p.capital);
