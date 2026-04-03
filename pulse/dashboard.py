@@ -50,6 +50,8 @@ MAKER_PRICE_OFFSET = 0.01
 FOLLOW_WALLETS = os.getenv("FOLLOW_WALLETS", "")  # comma-separated addresses
 FOLLOW_MULTIPLIER = float(os.getenv("FOLLOW_MULTIPLIER", "1.0"))  # 1.0 = same size as source
 FOLLOW_MAX_STAKE = float(os.getenv("FOLLOW_MAX_STAKE", "50"))     # safety cap per trade
+FOLLOW_AUTO_MODE = os.getenv("FOLLOW_AUTO_MODE", "true").lower() in ("1", "true", "yes")
+FOLLOW_AUTO_FRACTION = float(os.getenv("FOLLOW_AUTO_FRACTION", "0.001"))  # 0.1% of capital per bet
 
 app = FastAPI(title="BLACK DELTA / PULSE")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -57,6 +59,14 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Module-level references for API access
 _btc_feed: BTCFeed | None = None
 _follow_feed: FollowFeed | None = None
+
+# Runtime-mutable follow config (dashboard can toggle)
+_follow_config = {
+    "auto_mode": FOLLOW_AUTO_MODE,
+    "auto_fraction": FOLLOW_AUTO_FRACTION,
+    "multiplier": FOLLOW_MULTIPLIER,
+    "max_stake": FOLLOW_MAX_STAKE,
+}
 
 
 # --- Bot Logic (runs in background thread) ---
@@ -377,10 +387,17 @@ def handle_follow_trade(trade_data: dict):
     if price <= 0 or price >= 1:
         return
 
-    # Proportional stake: source_cost * multiplier, capped at max
     source_cost = round(price * size, 2)
-    stake = round(source_cost * FOLLOW_MULTIPLIER, 2)
-    stake = min(stake, FOLLOW_MAX_STAKE)
+
+    if _follow_config["auto_mode"]:
+        # Auto: fraction of current capital per bet
+        fraction = _follow_config["auto_fraction"]
+        stake = round(state.follow_capital * fraction, 2)
+    else:
+        # Manual: proportional to source with multiplier
+        stake = round(source_cost * _follow_config["multiplier"], 2)
+
+    stake = min(stake, _follow_config["max_stake"])
     stake = max(stake, 0.01)
 
     payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
@@ -519,8 +536,8 @@ async def api_follow():
     else:
         data["feed"] = {"connected": False, "wallets_count": 0}
     data["config"] = {
-        "multiplier": FOLLOW_MULTIPLIER,
-        "max_stake": FOLLOW_MAX_STAKE,
+        **_follow_config,
+        "current_auto_stake": round(state.follow_capital * _follow_config["auto_fraction"], 2),
     }
     return JSONResponse(data)
 
@@ -541,6 +558,24 @@ async def api_follow_add_wallet(request: Request):
         "label": info.get("label", ""),
         "proxy_wallet": info.get("proxy_wallet"),
     }})
+
+
+@app.patch("/api/follow/config")
+async def api_follow_update_config(request: Request):
+    """Update follow config at runtime (auto_mode, fraction, multiplier, max)."""
+    body = await request.json()
+    if "auto_mode" in body:
+        _follow_config["auto_mode"] = bool(body["auto_mode"])
+    if "auto_fraction" in body:
+        val = float(body["auto_fraction"])
+        _follow_config["auto_fraction"] = max(0.0001, min(0.01, val))  # 0.01% - 1%
+    if "multiplier" in body:
+        val = float(body["multiplier"])
+        _follow_config["multiplier"] = max(0.01, min(10.0, val))
+    if "max_stake" in body:
+        val = float(body["max_stake"])
+        _follow_config["max_stake"] = max(1.0, val)
+    return JSONResponse({"ok": True, "config": _follow_config})
 
 
 @app.delete("/api/follow/wallets")
