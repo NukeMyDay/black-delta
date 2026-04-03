@@ -798,7 +798,7 @@
   <div class="section-title" style="margin-top:var(--spacing-lg)">Copy Trades</div>
   <table class="trade-table">
     <thead>
-      <tr><th>Time</th><th>Source</th><th>Market</th><th>Direction</th><th>Price</th><th>Payout</th><th>Source $</th><th>Our $</th><th>Outcome</th><th>P&L</th></tr>
+      <tr><th>Time</th><th>Source</th><th>Asset</th><th>Direction</th><th>Price</th><th>Payout</th><th>Source $</th><th>Our $</th><th>Outcome</th><th>P&L</th></tr>
     </thead>
     <tbody id="follow-trades-body"></tbody>
   </table>
@@ -1471,12 +1471,22 @@ function updateFollowTab(data) {
         `<span style="color:${pnlVal >= 0 ? 'var(--green)' : 'var(--red)'}">${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)}</span>`;
 
       const slug = t.event_slug || t.slug || '';
-      const slugShort = slug.length > 20 ? '...' + slug.slice(-18) : slug;
+      const title = t.title || slug;
+      let assetIcon, assetLabel;
+      if (slug.includes('eth') || title.toLowerCase().includes('ethereum')) {
+        assetIcon = `<svg width="16" height="16" viewBox="0 0 32 32" style="vertical-align:middle"><path d="M16 2l-1 3.4L8.6 16.4 16 20.2l7.4-3.8L16 2z" fill="#627EEA"/><path d="M16 2v18.2l7.4-3.8L16 2z" fill="#627EEA" opacity=".6"/><path d="M16 22l-7.4-4.2L16 30l7.4-12.2L16 22z" fill="#627EEA"/><path d="M16 22v8l7.4-12.2L16 22z" fill="#627EEA" opacity=".6"/></svg>`;
+        assetLabel = 'ETH';
+      } else {
+        assetIcon = `<svg width="16" height="16" viewBox="0 0 32 32" style="vertical-align:middle"><circle cx="16" cy="16" r="14" fill="#F7931A"/><path d="M21.2 14.3c.3-2-1.2-3-3.3-3.8l.7-2.7-1.6-.4-.6 2.6c-.4-.1-.9-.2-1.3-.3l.7-2.6-1.7-.4-.7 2.7c-.3-.1-.7-.2-1-.3l-2.3-.6-.4 1.8s1.2.3 1.2.3c.7.2.8.6.8 1l-.8 3.2c0 .1.1.1.1.1l-.1 0-1.1 4.5c-.1.2-.3.5-.7.4 0 0-1.2-.3-1.2-.3l-.8 1.9 2.2.5c.4.1.8.2 1.2.3l-.7 2.8 1.6.4.7-2.7c.4.1.9.2 1.3.3l-.7 2.7 1.7.4.7-2.8c2.8.5 4.9.3 5.8-2.2.7-2-.1-3.2-1.5-3.9 1.1-.3 1.9-1 2.1-2.5zm-3.7 5.2c-.5 2-4 .9-5.1.7l.9-3.7c1.1.3 4.7.8 4.2 3zm.5-5.3c-.5 1.8-3.4.9-4.3.7l.8-3.3c1 .2 4 .6 3.5 2.6z" fill="white"/></svg>`;
+        assetLabel = 'BTC';
+      }
+      const windowMatch = slug.match(/(\d+)m/);
+      const window = windowMatch ? windowMatch[1] + 'm' : '5m';
 
       return `<tr>
         <td style="white-space:nowrap;font-size:11px">${time}</td>
         <td style="font-weight:500;color:var(--text)">${t.source_name || 'unknown'}</td>
-        <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim)" title="${slug}">${slugShort}</td>
+        <td title="${title}" style="white-space:nowrap">${assetIcon} <span style="font-size:11px;font-weight:600">${assetLabel}</span> <span style="font-size:10px;color:var(--text-dim)">${window}</span></td>
         <td><span class="pill ${dirPill}">${dirLabel}</span></td>
         <td style="font-family:'JetBrains Mono',monospace">$${(t.contract_price || 0).toFixed(2)}</td>
         <td style="font-family:'JetBrains Mono',monospace">${(t.payout_multiplier || 0).toFixed(1)}x</td>
