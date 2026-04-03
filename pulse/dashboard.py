@@ -290,7 +290,7 @@ def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
 
     while state.bot_running:
         try:
-            # Always fetch fresh BTC price (1s cadence)
+            # Update price from WebSocket (real-time) or REST fallback
             fresh_price = btc_feed.fetch_current_price()
             if fresh_price:
                 state.current_btc_price = fresh_price
