@@ -712,7 +712,7 @@ function updateKPIs(data) {
   pnlEl.textContent = `${s}EUR ${cap.pnl.toFixed(2)} (${s}${cap.pnl_pct.toFixed(2)}%)`;
   pnlEl.className = `kpi-sub ${cap.pnl >= 0 ? 'positive' : 'negative'}`;
   setVal('total-bets', stats.total_bets);
-  document.getElementById('win-lose').textContent = `${stats.wins}W / ${stats.losses}L / ${stats.pending} Pending`;
+  document.getElementById('win-lose').textContent = `${stats.wins}W / ${stats.losses}L / ${stats.pending} pending`;
   setVal('win-rate', stats.total_bets > 0 ? `${stats.win_rate}%` : '-');
   setVal('volatility-val', data.current.volatility > 0 ? `${(data.current.volatility * 100).toFixed(6)}%/s` : '-');
 
@@ -799,18 +799,15 @@ function updateInterval(data) {
   // Active bets table — show LOCKED-IN values from placed bets (not live)
   const currentSlug = data.current.slug;
   const nowTs = Math.floor(Date.now() / 1000);
-  const pendingBets = data.recent_trades.filter(t => t.bet_placed && t.outcome === 'pending');
+  // Only show bets from current window as active
+  const activeBets = data.recent_trades.filter(t =>
+    t.bet_placed && t.outcome === 'pending' && t.event_slug === currentSlug);
 
-  // Split into current window (active) and expired windows (validating)
-  const activeBets = pendingBets.filter(t => t.event_slug === currentSlug);
-  const validatingBets = pendingBets.filter(t => t.event_slug !== currentSlug);
-  const allBets = [...activeBets, ...validatingBets];
-
-  if (allBets.length === 0) {
+  if (activeBets.length === 0) {
     tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">No active bets</td></tr>';
     noteEl.textContent = '';
   } else {
-    tbody.innerHTML = allBets.map(t => {
+    tbody.innerHTML = activeBets.map(t => {
       const dp = t.direction === 'up' ? 'pill-up' : 'pill-down';
       const ep = (t.edge * 100).toFixed(2);
       const ew = Math.min(Math.abs(t.edge) * 500, 100);
@@ -819,12 +816,7 @@ function updateInterval(data) {
       const oc = t.order_type === 'maker' ? 'pill-maker' : 'pill-taker';
       const ev = t.ev_per_dollar || 0;
       const pm = t.payout_multiplier || (t.contract_price > 0 ? (1 / t.contract_price) : 0);
-      const isValidating = t.event_slug !== currentSlug;
-      const statusPill = isValidating
-        ? '<span class="pill" style="background:rgba(129,140,248,0.1);color:#818cf8;border-color:rgba(129,140,248,0.3)">VALIDATING</span>'
-        : '<span class="pill" style="background:rgba(250,204,21,0.1);color:#facc15;border-color:rgba(250,204,21,0.3)">ACTIVE</span>';
-      const rowStyle = isValidating ? 'opacity:0.6' : '';
-      return `<tr style="${rowStyle}">
+      return `<tr>
         <td><span class="pill ${dp}">${t.direction.toUpperCase()}</span></td>
         <td class="mono">$${(t.contract_price || 0).toFixed(2)}</td>
         <td>${pm.toFixed(1)}x</td>
@@ -834,7 +826,7 @@ function updateInterval(data) {
         <td class="${t.edge > 0 ? 'positive' : 'negative'}">${ep}% <span class="edge-bar"><span class="edge-bar-fill" style="width:${ew}%;background:${ec}"></span></span></td>
         <td class="${ev > 0 ? 'positive' : 'negative'}">$${ev > 0 ? '+' : ''}${ev.toFixed(4)}</td>
         <td><span class="pill ${oc}">${ot}</span></td>
-        <td>${statusPill}</td>
+        <td><span class="pill" style="background:rgba(250,204,21,0.1);color:#facc15;border-color:rgba(250,204,21,0.3)">ACTIVE</span></td>
       </tr>`;
     }).join('');
     noteEl.textContent = '';
@@ -923,7 +915,14 @@ function updateTradeHistory(data) {
       <td class="${t.edge > 0 ? 'positive' : 'negative'}">${((t.edge||0)*100).toFixed(2)}%</td>
       <td class="${t.ev_per_dollar > 0 ? 'positive' : 'negative'}">$${(t.ev_per_dollar||0).toFixed(4)}</td>
       <td>${(t.sigma_move||0).toFixed(2)}</td>
-      <td><span class="pill pill-${t.outcome === 'win' ? 'win' : t.outcome === 'lose' ? 'lose' : 'pending'}">${(t.outcome||'pending').toUpperCase()}</span></td>
+      <td>${(() => {
+        if (t.outcome === 'win') return '<span class="pill pill-win">WIN</span>';
+        if (t.outcome === 'lose') return '<span class="pill pill-lose">LOSE</span>';
+        const curSlug = lastData?.current?.slug;
+        if (t.event_slug && t.event_slug !== curSlug)
+          return '<span class="pill" style="background:rgba(129,140,248,0.1);color:#818cf8;border-color:rgba(129,140,248,0.3)">VALIDATING</span>';
+        return '<span class="pill pill-pending">PENDING</span>';
+      })()}</td>
       <td class="${pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral'}">$${pnl > 0 ? '+' : ''}${pnl.toFixed(2)}</td>
     </tr>`;
   }).join('');
@@ -967,7 +966,11 @@ function getTradesForExport() {
     contract_price: +(t.contract_price || 0).toFixed(4),
     real_prob: +((t.real_prob || 0) * 100).toFixed(2),
     payout_multiplier: +(t.payout_multiplier || 0).toFixed(2),
-    outcome: (t.outcome || 'pending').toUpperCase(),
+    outcome: (() => {
+      if (t.outcome === 'win' || t.outcome === 'lose') return t.outcome.toUpperCase();
+      const curSlug = lastData?.current?.slug;
+      return (t.event_slug && t.event_slug !== curSlug) ? 'VALIDATING' : 'PENDING';
+    })(),
     pnl_usd: +(t.pnl_usd || 0).toFixed(2),
     stake_usd: t.stake_usd || 0,
   }));
