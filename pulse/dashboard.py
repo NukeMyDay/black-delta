@@ -714,6 +714,16 @@ async def api_formula():
 
 # --- Startup ---
 
+def _state_saver_loop(interval: int = 60):
+    """Background thread: save follow state to disk every `interval` seconds."""
+    while True:
+        time.sleep(interval)
+        try:
+            state.save_follow_state()
+        except Exception as e:
+            print(f"[STATE] Save failed: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="PULSE Dashboard")
     parser.add_argument("--port", type=int, default=3000)
@@ -724,9 +734,16 @@ def main():
     btc_feed = BTCFeed(window_seconds=VOL_WINDOW)
     _btc_feed = btc_feed
 
+    # Restore follow state from previous run before starting anything
+    state.load_follow_state()
+
     bot_thread = threading.Thread(target=bot_loop, args=(formula, btc_feed),
                                   daemon=True)
     bot_thread.start()
+
+    # Periodic state persistence (every 60s)
+    saver_thread = threading.Thread(target=_state_saver_loop, args=(60,), daemon=True)
+    saver_thread.start()
 
     # --- Follow Mode ---
     follow_feed = FollowFeed()
@@ -753,7 +770,12 @@ def main():
     print(f"\n  BLACK DELTA / PULSE Dashboard")
     print(f"  http://localhost:{args.port}\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
+    finally:
+        # Save on clean shutdown (Ctrl+C, SIGTERM, etc.)
+        print("[STATE] Saving follow state on shutdown...")
+        state.save_follow_state()
 
 
 if __name__ == "__main__":

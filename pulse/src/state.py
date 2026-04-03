@@ -4,9 +4,13 @@ Shared state between the bot and the dashboard.
 Thread-safe data store that the bot writes to and the API reads from.
 """
 
+import json
+import os
 import threading
 from collections import deque
 from datetime import datetime, timezone
+
+STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "follow_state.json")
 
 
 class PulseState:
@@ -283,6 +287,53 @@ class PulseState:
                     "pnl": round(self.follow_pnl, 2),
                 })
             return closed
+
+    def save_follow_state(self, path: str = STATE_FILE):
+        """Persist follow state to disk (atomic write via temp file)."""
+        with self._lock:
+            data = {
+                "follow_capital": self.follow_capital,
+                "follow_start_capital": self.follow_start_capital,
+                "follow_total_bets": self.follow_total_bets,
+                "follow_total_sells": self.follow_total_sells,
+                "follow_wins": self.follow_wins,
+                "follow_losses": self.follow_losses,
+                "follow_pnl": self.follow_pnl,
+                "follow_trades": list(self.follow_trades),
+                "follow_pnl_curve": list(self.follow_pnl_curve),
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+            }
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+
+    def load_follow_state(self, path: str = STATE_FILE):
+        """Restore follow state from disk. Silently skips if file missing."""
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+
+        with self._lock:
+            self.follow_capital = data.get("follow_capital", self.follow_capital)
+            self.follow_start_capital = data.get("follow_start_capital", self.follow_start_capital)
+            self.follow_total_bets = data.get("follow_total_bets", 0)
+            self.follow_total_sells = data.get("follow_total_sells", 0)
+            self.follow_wins = data.get("follow_wins", 0)
+            self.follow_losses = data.get("follow_losses", 0)
+            self.follow_pnl = data.get("follow_pnl", 0.0)
+
+            trades = data.get("follow_trades", [])
+            self.follow_trades = deque(trades, maxlen=500)
+
+            curve = data.get("follow_pnl_curve", [])
+            self.follow_pnl_curve = deque(curve, maxlen=2000)
+
+        saved_at = data.get("saved_at", "unknown")
+        print(f"[STATE] Follow state restored from disk (saved {saved_at})")
 
     def get_follow_snapshot(self) -> dict:
         """Return follow-mode state for the API."""
