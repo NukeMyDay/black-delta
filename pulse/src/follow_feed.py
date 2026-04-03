@@ -65,6 +65,8 @@ class FollowFeed:
             "proxy_wallet": None,
             "added_ts": time.time(),
             "trade_count": 0,
+            "buy_count": 0,
+            "sell_count": 0,
         }
 
         # Resolve proxy wallet via Polymarket data API
@@ -264,11 +266,16 @@ class FollowFeed:
                 self._seen_tx = set(list(self._seen_tx)[-200:])
 
         # Find which wallet this belongs to
+        side = (payload.get("side") or "").upper()
         matched_wallet = None
         for addr, info in self.wallets.items():
             if proxy == addr or proxy == info.get("proxy_wallet"):
                 matched_wallet = addr
                 info["trade_count"] += 1
+                if side == "BUY":
+                    info["buy_count"] += 1
+                else:
+                    info["sell_count"] += 1
                 break
 
         trade = {
@@ -315,6 +322,8 @@ class FollowFeed:
                     "label": info.get("label", ""),
                     "proxy": info.get("proxy_wallet") or "",
                     "trades": info["trade_count"],
+                    "buys": info.get("buy_count", 0),
+                    "sells": info.get("sell_count", 0),
                 }
                 for info in self.wallets.values()
             ],

@@ -806,7 +806,7 @@
   </div>
   <table class="trade-table" id="follow-wallets-table">
     <thead>
-      <tr><th>Label</th><th>Address</th><th>Proxy</th><th>Trades</th><th></th></tr>
+      <tr><th>Label</th><th>Address</th><th>Proxy</th><th>Copied</th><th>Skipped</th><th></th></tr>
     </thead>
     <tbody id="follow-wallets-body"></tbody>
   </table>
@@ -1458,14 +1458,15 @@ function updateFollowTab(data) {
   const walletsBody = document.getElementById('follow-wallets-body');
   const wallets = feed.wallets || [];
   if (wallets.length === 0) {
-    walletsBody.innerHTML = '<tr><td colspan="5" style="color:var(--text-dim);text-align:center;padding:20px">No wallets configured — add one above</td></tr>';
+    walletsBody.innerHTML = '<tr><td colspan="6" style="color:var(--text-dim);text-align:center;padding:20px">No wallets configured — add one above</td></tr>';
   } else {
     const truncAddr = a => a ? a.slice(0,6) + '...' + a.slice(-4) : '-';
     walletsBody.innerHTML = wallets.map(w => `<tr>
       <td style="font-weight:600;color:var(--text)">${w.label || '-'}</td>
       <td style="font-family:'JetBrains Mono',monospace;font-size:11px" title="${w.address}">${truncAddr(w.address)}</td>
       <td style="font-family:'JetBrains Mono',monospace;font-size:11px" title="${w.proxy}">${truncAddr(w.proxy)}</td>
-      <td>${w.trades}</td>
+      <td style="font-weight:600">${w.buys || 0} <span style="color:var(--text-dim);font-weight:400;font-size:10px">BUY</span></td>
+      <td style="color:var(--text-dim)">${w.sells || 0} <span style="font-size:10px">SELL</span></td>
       <td><button class="follow-remove-btn" onclick="removeFollowWallet('${w.address}')" title="Remove">&#x2715;</button></td>
     </tr>`).join('');
   }
