@@ -31,6 +31,14 @@ class BTCFeed:
         self._ws_ts: float = 0
         self._ws_thread: threading.Thread | None = None
         self._ws_running = False
+        self._ws_connected = False
+
+        # Callback for real-time price updates (called from WS thread)
+        self.on_price: callable | None = None
+
+        # Price ticker thread (independent REST fallback)
+        self._ticker_thread: threading.Thread | None = None
+        self._ticker_running = False
 
     # ------------------------------------------------------------------
     #  WebSocket (real-time, ~50ms latency)
@@ -44,6 +52,12 @@ class BTCFeed:
         self._ws_thread.start()
         print("[WS] Binance trade stream starting...")
 
+        # Start independent price ticker thread (REST fallback every 2s)
+        if not self._ticker_thread or not self._ticker_thread.is_alive():
+            self._ticker_running = True
+            self._ticker_thread = threading.Thread(target=self._price_ticker, daemon=True)
+            self._ticker_thread.start()
+
     def _ws_loop(self):
         """Background thread running the async WebSocket."""
         loop = asyncio.new_event_loop()
@@ -55,6 +69,7 @@ class BTCFeed:
         while self._ws_running:
             try:
                 async with websockets.connect(BINANCE_WS, ping_interval=20) as ws:
+                    self._ws_connected = True
                     print("[WS] Connected to Binance trade stream")
                     async for msg in ws:
                         if not self._ws_running:
@@ -65,15 +80,56 @@ class BTCFeed:
                             self._ws_price = price
                             self._ws_ts = time.time()  # local clock for freshness check
                             self._add_price(price)
+                            # Fire callback for instant frontend updates
+                            if self.on_price:
+                                try:
+                                    self.on_price(price)
+                                except Exception:
+                                    pass
                         except (KeyError, ValueError):
                             pass
             except Exception as e:
+                self._ws_connected = False
                 print(f"[WS] Disconnected: {e}, reconnecting in 2s...")
                 await asyncio.sleep(2)
 
     def stop_ws(self):
-        """Stop the WebSocket feed."""
+        """Stop the WebSocket feed and price ticker."""
         self._ws_running = False
+        self._ticker_running = False
+
+    def _price_ticker(self):
+        """Independent thread that fetches BTC price via REST every 2s.
+
+        Acts as fallback when WebSocket is not connected.
+        Ensures state.current_btc_price stays fresh even when
+        the main bot loop is blocked on Polymarket API calls.
+        """
+        print("[TICKER] Price ticker thread started")
+        while self._ticker_running:
+            try:
+                # Skip if WebSocket is delivering fresh prices
+                if self._ws_connected and self._ws_price > 0 and (time.time() - self._ws_ts) < 5:
+                    time.sleep(1)
+                    continue
+
+                # REST fallback
+                resp = requests.get(
+                    f"{BINANCE_API}/ticker/price",
+                    params={"symbol": "BTCUSDT"},
+                    timeout=3,
+                )
+                if resp.status_code == 200:
+                    price = float(resp.json()["price"])
+                    self._add_price(price)
+                    if self.on_price:
+                        try:
+                            self.on_price(price)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            time.sleep(2)
 
     # ------------------------------------------------------------------
     #  Price Access
@@ -101,6 +157,18 @@ class BTCFeed:
         except (requests.RequestException, KeyError, ValueError):
             pass
         return None
+
+    def get_feed_status(self) -> dict:
+        """Return diagnostic info about the price feed."""
+        ws_age = time.time() - self._ws_ts if self._ws_ts > 0 else -1
+        return {
+            "ws_connected": self._ws_connected,
+            "ws_price": self._ws_price,
+            "ws_age_seconds": round(ws_age, 1),
+            "ws_fresh": self._ws_price > 0 and ws_age < 5,
+            "ticker_running": self._ticker_running,
+            "price_count": len(self.prices),
+        }
 
     def fetch_recent_klines(self, interval: str = "1m", limit: int = 60) -> list[float]:
         """Fetch recent kline close prices from Binance (for bootstrapping)."""

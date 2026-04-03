@@ -48,6 +48,9 @@ MAKER_PRICE_OFFSET = 0.01
 app = FastAPI(title="BLACK DELTA / PULSE")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Module-level reference for API access
+_btc_feed: BTCFeed | None = None
+
 
 # --- Bot Logic (runs in background thread) ---
 
@@ -302,11 +305,16 @@ ANALYZE_INTERVAL = 1  # re-analyze every N seconds
 def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
     """Main bot loop running in background thread.
 
-    Fetches BTC price every second for smooth frontend updates.
-    Re-analyzes every ANALYZE_INTERVAL seconds for fast reaction.
+    Price updates come from WebSocket callback + ticker thread (independent).
+    This loop focuses on analysis and trade management.
     """
     state.bot_running = True
     state.mode = "simulation"
+
+    # Wire real-time price callback: WS/ticker -> state (independent of this loop)
+    def _on_price(price: float):
+        state.current_btc_price = price
+    btc_feed.on_price = _on_price
 
     print("[BOT] Bootstrapping BTC price feed...")
     btc_feed.bootstrap()
@@ -322,11 +330,6 @@ def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
 
     while state.bot_running:
         try:
-            # Update price from WebSocket (real-time) or REST fallback
-            fresh_price = btc_feed.fetch_current_price()
-            if fresh_price:
-                state.current_btc_price = fresh_price
-
             slug = get_current_event_slug()
             now = time.time()
 
@@ -382,6 +385,14 @@ async def dashboard():
 @app.get("/api/state")
 async def api_state():
     return JSONResponse(state.get_snapshot())
+
+
+@app.get("/api/feed-status")
+async def api_feed_status():
+    """Diagnostic endpoint for BTC price feed health."""
+    if _btc_feed:
+        return JSONResponse(_btc_feed.get_feed_status())
+    return JSONResponse({"error": "feed not initialized"})
 
 
 @app.get("/api/formula")
@@ -484,8 +495,10 @@ def main():
     parser.add_argument("--port", type=int, default=3000)
     args = parser.parse_args()
 
+    global _btc_feed
     formula = PulseFormula(df=STUDENT_T_DF)
     btc_feed = BTCFeed(window_seconds=VOL_WINDOW)
+    _btc_feed = btc_feed
 
     bot_thread = threading.Thread(target=bot_loop, args=(formula, btc_feed),
                                   daemon=True)

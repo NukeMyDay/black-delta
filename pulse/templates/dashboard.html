@@ -824,8 +824,9 @@ function updateInterval(data) {
   slugEl.textContent = data.current.slug || '';
   targetEl.textContent = '$' + data.current.target_price.toLocaleString('en-US', { minimumFractionDigits: 2 });
 
-  const dist = a.distance;
-  distWrap.innerHTML = `<span class="distance-badge ${dist > 0 ? 'positive' : 'negative'}">$${dist > 0 ? '+' : ''}${dist.toFixed(2)}</span>`;
+  // Always show BTC price - target price (positive = BTC above target)
+  const dist = data.current.btc_price - data.current.target_price;
+  distWrap.innerHTML = `<span class="distance-badge ${dist >= 0 ? 'positive' : 'negative'}">$${dist >= 0 ? '+' : ''}${dist.toFixed(2)}</span>`;
 
   // Row 2: Analysis metrics
   metricsRow.style.display = 'block';
