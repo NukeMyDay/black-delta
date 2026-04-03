@@ -831,6 +831,10 @@ function updatePnlChart(data) {
   if (!values.length || values[values.length - 1] !== data.capital.current) {
     labels.push(now); values.push(data.capital.current);
   }
+  // Ensure at least 2 points so the chart draws a visible line
+  if (values.length === 1) {
+    labels.unshift('Start'); values.unshift(data.capital.start);
+  }
 
   // EMA trend line (period 10 = smoothed over ~10 trades)
   const emaPeriod = Math.max(5, Math.min(10, Math.floor(values.length / 3)));

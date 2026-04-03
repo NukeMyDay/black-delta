@@ -41,7 +41,6 @@ load_dotenv()
 # Configuration from env
 STAKE_USD = float(os.getenv("PULSE_STAKE_USD", "5"))
 MIN_EDGE = float(os.getenv("PULSE_MIN_EDGE", "0.08"))
-MAX_CONTRACT_PRICE = float(os.getenv("PULSE_MAX_CONTRACT_PRICE", "0.15"))
 VOL_WINDOW = int(os.getenv("PULSE_VOLATILITY_WINDOW", "300"))
 STUDENT_T_DF = float(os.getenv("PULSE_STUDENT_T_DF", "4"))
 
@@ -250,12 +249,6 @@ def analyze_market(formula: PulseFormula, btc_feed: BTCFeed,
     if best["edge"] < MIN_EDGE:
         best["should_bet"] = False
 
-    # Filter: skip expensive contracts (stay in tail-event territory)
-    # Cheap contracts = high multiplier on win (e.g. 5% → 20x, 10% → 10x)
-    if contract_price > MAX_CONTRACT_PRICE and best["should_bet"]:
-        best["should_bet"] = False
-        best["reason"] = f"Contract too expensive: {contract_price:.0%} > {MAX_CONTRACT_PRICE:.0%} (multiplier too low)"
-
     # Filter: skip DOWN bets at sigma ≈ 0 (BTC has upward drift at target)
     if (direction == "down" and abs(best.get("sigma_move", 0)) < 0.05
             and best["should_bet"]):
@@ -342,7 +335,6 @@ def run_loop(formula: PulseFormula, btc_feed: BTCFeed, mode: str):
     print(f"  Mode: {mode.upper()}")
     print(f"  Stake: ${STAKE_USD}")
     print(f"  Min Edge: {MIN_EDGE * 100}%")
-    print(f"  Max Contract Price: {MAX_CONTRACT_PRICE * 100}% (min {1/MAX_CONTRACT_PRICE:.1f}x multiplier)")
     print(f"  Student-t df: {STUDENT_T_DF}")
     print(f"  Vol Window: {VOL_WINDOW}s")
     print(f"  Taker switch: last {TAKER_SWITCH_SECONDS}s")
