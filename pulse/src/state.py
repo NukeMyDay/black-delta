@@ -287,8 +287,8 @@ class PulseState:
     def get_follow_snapshot(self) -> dict:
         """Return follow-mode state for the API."""
         with self._lock:
-            win_rate = (self.follow_wins / self.follow_total_bets * 100
-                        if self.follow_total_bets > 0 else 0)
+            resolved = self.follow_wins + self.follow_losses
+            win_rate = (self.follow_wins / resolved * 100 if resolved > 0 else 0)
             return {
                 "capital": {
                     "start": self.follow_start_capital,
