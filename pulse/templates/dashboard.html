@@ -146,29 +146,12 @@
       font-family: 'JetBrains Mono', monospace;
     }
 
-    .btc-canvas-wrap { position: relative; height: 240px; }
-    .btc-canvas-wrap canvas { position: absolute; top: 0; left: 0; }
 
-    .live-dot {
-      position: absolute; width: 8px; height: 8px;
-      background: var(--orange); border-radius: 50%;
-      box-shadow: 0 0 8px rgba(247,147,26,0.5);
-      pointer-events: none; z-index: 5;
-    }
-
-    .target-label {
-      position: absolute; right: 0;
-      background: var(--orange); color: #000;
-      font-size: 9px; font-weight: 700; padding: 2px 8px; border-radius: 3px;
-      font-family: 'JetBrains Mono', monospace; pointer-events: none; z-index: 5;
-    }
-
-    /* --- KPIs --- */
-    .kpi-row {
+    /* --- KPIs (2x2 grid inside charts-row) --- */
+    .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: var(--spacing-lg);
-      margin-bottom: var(--spacing-xl);
+      grid-template-columns: 1fr 1fr;
+      gap: var(--spacing-md);
     }
     .kpi-item {
       padding: var(--spacing-md);
@@ -332,39 +315,87 @@
     }
     .trade-table tr:hover { background: rgba(255,255,255,0.015); }
 
+    /* --- EXPORT TOOLBAR --- */
+    .export-toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: var(--spacing-md); flex-wrap: wrap; gap: var(--spacing-sm);
+    }
+    .export-buttons { display: flex; gap: var(--spacing-xs); }
+    .export-btn {
+      background: var(--surface); color: var(--text-secondary); border: 1px solid var(--border);
+      padding: 7px 16px; border-radius: 6px; font-size: 12px; font-weight: 500;
+      cursor: pointer; font-family: inherit; transition: all 0.15s; display: flex; align-items: center; gap: 6px;
+    }
+    .export-btn:hover { background: var(--border-light); color: var(--text); }
+    .export-btn.copied { background: rgba(74,222,128,0.1); color: var(--green); border-color: rgba(74,222,128,0.3); }
+    .export-btn svg { width: 14px; height: 14px; }
+    .raw-data-wrap {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      margin-bottom: var(--spacing-lg); max-height: 400px; overflow: auto; display: none;
+    }
+    .raw-data-wrap pre {
+      padding: var(--spacing-md); margin: 0;
+      font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.5;
+      color: var(--text-secondary); white-space: pre; tab-size: 2;
+    }
+
     /* --- STRATEGY TAB --- */
-    .strategy-section {
-      background: var(--surface);
-      border-radius: var(--radius);
-      padding: var(--spacing-lg);
-      margin-bottom: var(--spacing-md);
+    .strategy-overview {
+      background: var(--surface); border-radius: var(--radius);
+      padding: var(--spacing-lg); margin-bottom: var(--spacing-lg);
+      border-left: 3px solid var(--accent);
     }
-    .strategy-section h3 {
-      color: var(--accent-bright);
-      margin-bottom: var(--spacing-sm);
-      font-size: 14px; font-weight: 600;
+    .strategy-overview p { color: var(--text-secondary); line-height: 1.8; font-size: 13px; }
+
+    .pipeline { margin-bottom: var(--spacing-lg); }
+    .pipeline-step {
+      display: grid; grid-template-columns: 48px 1fr;
+      gap: 0 var(--spacing-md); margin-bottom: 0;
     }
-    .strategy-section p { color: var(--text-secondary); line-height: 1.8; font-size: 13px; }
-    .formula-box {
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: 6px; padding: 12px 16px; margin: var(--spacing-sm) 0;
-      font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--accent);
+    .pipeline-marker {
+      display: flex; flex-direction: column; align-items: center;
     }
     .step-number {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 24px; height: 24px;
+      display: flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; flex-shrink: 0;
       background: linear-gradient(135deg, #6366f1, #818cf8);
-      color: white; border-radius: 6px; font-size: 11px;
-      font-weight: 700; margin-right: 10px;
+      color: white; border-radius: 8px; font-size: 13px;
+      font-weight: 700;
     }
+    .pipeline-line {
+      width: 2px; flex: 1; background: var(--border-light); margin: 4px 0;
+    }
+    .pipeline-content {
+      background: var(--surface); border-radius: var(--radius);
+      padding: var(--spacing-md) var(--spacing-lg);
+      margin-bottom: var(--spacing-md);
+    }
+    .pipeline-content h4 {
+      color: var(--text); font-size: 14px; font-weight: 600; margin-bottom: var(--spacing-xs);
+    }
+    .pipeline-content p { color: var(--text-secondary); line-height: 1.7; font-size: 12.5px; }
+    .formula-box {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 10px 14px; margin: var(--spacing-sm) 0;
+      font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--accent);
+    }
+
+    .strategy-edge {
+      background: var(--surface); border-radius: var(--radius);
+      padding: var(--spacing-lg); margin-bottom: var(--spacing-lg);
+      border-left: 3px solid var(--green);
+    }
+    .strategy-edge h3 { color: var(--green); font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: var(--spacing-sm); }
+    .strategy-edge p { color: var(--text-secondary); line-height: 1.8; font-size: 13px; }
+
     .param-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: var(--spacing-sm); margin-top: var(--spacing-md);
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: var(--spacing-sm);
     }
     .param-item {
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: 6px; padding: var(--spacing-sm) 16px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: var(--spacing-sm) var(--spacing-md);
     }
     .param-item label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
     .param-item .value { font-size: 16px; font-weight: 700; color: var(--text); margin-top: 4px; }
@@ -376,10 +407,13 @@
     ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
 
     @media (max-width: 900px) {
-      .kpi-row { grid-template-columns: 1fr 1fr; }
       .charts-row { grid-template-columns: 1fr; }
+      .kpi-grid { grid-template-columns: 1fr 1fr; }
       .interval-header { flex-direction: column; gap: var(--spacing-md); }
       .content { padding: var(--spacing-lg) var(--spacing-md); }
+      .export-toolbar { flex-direction: column; align-items: flex-start; }
+      .pipeline-step { grid-template-columns: 36px 1fr; }
+      .param-grid { grid-template-columns: 1fr 1fr; }
     }
   </style>
 </head>
@@ -410,39 +444,27 @@
         <canvas id="pnl-chart"></canvas>
       </div>
     </div>
-    <div class="chart-section">
-      <div class="chart-header">
-        <h3>BTC Preis (live)</h3>
-        <span id="btc-chart-value" class="chart-value" style="color:var(--orange)">-</span>
+    <div class="kpi-grid">
+      <div class="kpi-item">
+        <div class="kpi-label">Kapital</div>
+        <div class="kpi-value" id="capital">EUR 1,000.00</div>
+        <div class="kpi-sub" id="capital-pnl">+EUR 0.00 (0.00%)</div>
       </div>
-      <div class="btc-canvas-wrap" id="btc-canvas-wrap">
-        <canvas id="btc-chart"></canvas>
-        <div class="live-dot" id="btc-live-dot" style="display:none"></div>
-        <div class="target-label" id="target-label" style="display:none">Target</div>
+      <div class="kpi-item">
+        <div class="kpi-label">Wetten</div>
+        <div class="kpi-value" id="total-bets">0</div>
+        <div class="kpi-sub" id="win-lose">0W / 0L / 0 Pending</div>
       </div>
-    </div>
-  </div>
-
-  <div class="kpi-row">
-    <div class="kpi-item">
-      <div class="kpi-label">Kapital</div>
-      <div class="kpi-value" id="capital">EUR 1,000.00</div>
-      <div class="kpi-sub" id="capital-pnl">+EUR 0.00 (0.00%)</div>
-    </div>
-    <div class="kpi-item">
-      <div class="kpi-label">Wetten</div>
-      <div class="kpi-value" id="total-bets">0</div>
-      <div class="kpi-sub" id="win-lose">0W / 0L / 0 Pending</div>
-    </div>
-    <div class="kpi-item">
-      <div class="kpi-label">Win Rate</div>
-      <div class="kpi-value" id="win-rate">-</div>
-      <div class="kpi-sub">(irrelevant - EV zaehlt)</div>
-    </div>
-    <div class="kpi-item">
-      <div class="kpi-label">Volatilitaet</div>
-      <div class="kpi-value" id="volatility-val">-</div>
-      <div class="kpi-sub" id="prices-info">-</div>
+      <div class="kpi-item">
+        <div class="kpi-label">Win Rate</div>
+        <div class="kpi-value" id="win-rate">-</div>
+        <div class="kpi-sub">(irrelevant - EV zaehlt)</div>
+      </div>
+      <div class="kpi-item">
+        <div class="kpi-label">Volatilitaet</div>
+        <div class="kpi-value" id="volatility-val">-</div>
+        <div class="kpi-sub" id="prices-info">-</div>
+      </div>
     </div>
   </div>
 
@@ -497,7 +519,21 @@
 </div>
 
 <div id="tab-history" class="content hidden">
-  <div class="section-title">Trade Historie</div>
+  <div class="export-toolbar">
+    <div class="section-title" style="margin-bottom:0">Trade Historie</div>
+    <div class="export-buttons">
+      <button class="export-btn" id="copy-csv-btn" onclick="copyTradesAs('csv')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        CSV
+      </button>
+      <button class="export-btn" id="copy-json-btn" onclick="copyTradesAs('json')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        JSON
+      </button>
+      <button class="export-btn" id="toggle-raw-btn" onclick="toggleRawView()">Raw</button>
+    </div>
+  </div>
+  <div class="raw-data-wrap" id="raw-data-wrap"><pre id="raw-data-pre"></pre></div>
   <table class="trade-table">
     <thead>
       <tr><th>Zeit</th><th>Contract</th><th>Richtung</th><th>Order</th><th>BTC</th><th>Target</th><th>Edge</th><th>EV/Dollar</th><th>Sigma</th><th>Outcome</th><th>P&L</th></tr>
@@ -518,18 +554,18 @@
 
 <div id="tab-strategy" class="content hidden">
   <div id="strategy-content"><div style="color: var(--text-dim)">Lade Strategie...</div></div>
+  <div class="section-title" style="margin-top:var(--spacing-lg)">Aktive Parameter</div>
+  <div class="param-grid" id="strategy-params"></div>
 </div>
 
 <script>
 // ============================================================
 //  STATE
 // ============================================================
-let pnlChart = null, btcChart = null;
+let pnlChart = null;
 let currentTab = 'live';
 let lastData = null;
-let btcPoints = [];                // {ts, price, target}
 const POLL_MS = 1000;
-const BTC_WINDOW_S = 300;
 const HISTORY_PAGE_SIZE = 20;
 let historyVisible = HISTORY_PAGE_SIZE;
 
@@ -585,123 +621,16 @@ function initCharts() {
     }
   });
 
-  btcChart = new Chart(document.getElementById('btc-chart').getContext('2d'), {
-    type: 'line',
-    data: { labels: [], datasets: [
-      {
-        label: 'BTC', data: [], borderColor: '#f7931a',
-        backgroundColor: ctx => {
-          const { ctx: c, chartArea } = ctx.chart;
-          if (!chartArea) return 'transparent';
-          const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-          g.addColorStop(0, 'rgba(247,147,26,0.08)'); g.addColorStop(1, 'rgba(247,147,26,0)');
-          return g;
-        },
-        fill: true, tension: 0.35, pointRadius: 0, borderWidth: 2,
-      },
-      { label: 'Target', data: [], borderColor: 'rgba(247,147,26,0.3)', borderDash: [5, 4], pointRadius: 0, borderWidth: 1, fill: false }
-    ]},
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      animation: false,
-      plugins: { legend: { display: false }, tooltip: { enabled: false } },
-      scales: {
-        x: {
-          type: 'linear',
-          ticks: {
-            color: tColor, font: cFont, maxTicksLimit: 6,
-            callback: val => {
-              const d = new Date(val);
-              return d.toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
-            }
-          },
-          grid: { display: false }, border: { display: false },
-        },
-        y: {
-          position: 'right',
-          ticks: { color: tColor, font: cFont, callback: v => '$' + v.toLocaleString('en-US'), maxTicksLimit: 4 },
-          grid: { color: gColor, lineWidth: 0.5 }, border: { display: false },
-        }
-      }
-    },
-    plugins: [{
-      afterDraw(chart) {
-        const dot = document.getElementById('btc-live-dot');
-        const lbl = document.getElementById('target-label');
-        if (!chart.chartArea || !btcPoints.length) {
-          dot.style.display = 'none'; lbl.style.display = 'none'; return;
-        }
-        // Position dot at last data point
-        const meta = chart.getDatasetMeta(0);
-        const last = meta.data[meta.data.length - 1];
-        if (last) {
-          dot.style.display = 'block';
-          dot.style.left = (last.x - 4) + 'px';
-          dot.style.top = (last.y - 4) + 'px';
-        }
-        // Position target label
-        const tgt = btcPoints[btcPoints.length - 1].target;
-        if (tgt > 0 && chart.scales.y) {
-          const ty = chart.scales.y.getPixelForValue(tgt);
-          lbl.style.display = 'block';
-          lbl.style.top = (ty - 9) + 'px';
-        }
-      }
-    }]
-  });
 }
 
 // ============================================================
-//  BTC CHART FEED
+//  BTC PRICE TEXT UPDATE (chart removed, text kept)
 // ============================================================
 function feedBtcPrice(price, target) {
   if (!price || price <= 0) return;
-  const now = Date.now();
-  btcPoints.push({ ts: now, price, target: target || 0 });
-
-  // Trim to window
-  const cutoff = now - BTC_WINDOW_S * 1000;
-  while (btcPoints.length > 0 && btcPoints[0].ts < cutoff) btcPoints.shift();
-
-  // Update text displays
   const fmt = '$' + price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const el = document.getElementById('live-btc-price');
   if (el) el.textContent = fmt;
-  const cv = document.getElementById('btc-chart-value');
-  if (cv) cv.textContent = fmt;
-
-  renderBtcChart();
-}
-
-function renderBtcChart() {
-  if (!btcChart || btcPoints.length < 2) return;
-
-  const first = btcPoints[0], last = btcPoints[btcPoints.length - 1];
-  const range = last.ts - first.ts;
-  const xPad = Math.max(range * 0.20, 15000);
-
-  // Price data as {x,y} — Chart.js animates y-values smoothly between updates
-  btcChart.data.datasets[0].data = btcPoints.map(p => ({ x: p.ts, y: p.price }));
-
-  // Target extends to right edge
-  const tData = btcPoints.map(p => ({ x: p.ts, y: p.target }));
-  tData.push({ x: last.ts + xPad, y: last.target });
-  btcChart.data.datasets[1].data = tData;
-
-  // Sliding x-axis window (animate min/max for smooth scroll)
-  btcChart.options.scales.x.min = first.ts;
-  btcChart.options.scales.x.max = last.ts + xPad;
-
-  // Tight y-axis
-  const allY = btcPoints.flatMap(p => [p.price, p.target]).filter(v => v > 0);
-  if (allY.length) {
-    const mn = Math.min(...allY), mx = Math.max(...allY);
-    const pad = Math.max((mx - mn) * 0.25, 5);
-    btcChart.options.scales.y.min = mn - pad;
-    btcChart.options.scales.y.max = mx + pad;
-  }
-
-  btcChart.update('none');
 }
 
 // ============================================================
@@ -920,17 +849,103 @@ function updateTradeHistory(data) {
 }
 
 // ============================================================
+//  EXPORT (CSV / JSON)
+// ============================================================
+function getTradesForExport() {
+  if (!lastData) return [];
+  return lastData.recent_trades.filter(t => t.bet_placed).map(t => ({
+    time: t.time || '',
+    slug: t.event_slug || '',
+    direction: (t.direction || '').toUpperCase(),
+    order_type: (t.order_type || '').toUpperCase(),
+    btc_price: t.btc_price || 0,
+    target_price: t.target_price || 0,
+    edge_pct: +((t.edge || 0) * 100).toFixed(2),
+    ev_per_dollar: +(t.ev_per_dollar || 0).toFixed(4),
+    sigma_move: +(t.sigma_move || 0).toFixed(2),
+    contract_price: +(t.contract_price || 0).toFixed(4),
+    real_prob: +((t.real_prob || 0) * 100).toFixed(2),
+    payout_multiplier: +(t.payout_multiplier || 0).toFixed(2),
+    outcome: (t.outcome || 'pending').toUpperCase(),
+    pnl_usd: +(t.pnl_usd || 0).toFixed(2),
+    stake_usd: t.stake_usd || 0,
+  }));
+}
+
+function tradesToCSV(trades) {
+  if (!trades.length) return '';
+  const cols = Object.keys(trades[0]);
+  const rows = [cols.join('\t')];
+  for (const t of trades) rows.push(cols.map(c => t[c]).join('\t'));
+  return rows.join('\n');
+}
+
+function copyTradesAs(fmt) {
+  const trades = getTradesForExport();
+  const text = fmt === 'json' ? JSON.stringify(trades, null, 2) : tradesToCSV(trades);
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById(fmt === 'json' ? 'copy-json-btn' : 'copy-csv-btn');
+    btn.classList.add('copied');
+    const orig = btn.innerHTML;
+    btn.innerHTML = btn.innerHTML.replace(fmt.toUpperCase(), 'Kopiert!');
+    setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = orig; }, 1500);
+  });
+}
+
+function toggleRawView() {
+  const wrap = document.getElementById('raw-data-wrap');
+  const btn = document.getElementById('toggle-raw-btn');
+  if (wrap.style.display === 'none' || !wrap.style.display) {
+    const trades = getTradesForExport();
+    document.getElementById('raw-data-pre').textContent = JSON.stringify(trades, null, 2);
+    wrap.style.display = 'block';
+    btn.classList.add('copied');
+  } else {
+    wrap.style.display = 'none';
+    btn.classList.remove('copied');
+  }
+}
+
+// ============================================================
 //  STRATEGY
 // ============================================================
 async function loadStrategy() {
   try {
     const data = await (await fetch('/api/formula')).json();
+
+    // Pipeline steps
+    const stepsHtml = data.description.steps.map((s, i) => `
+      <div class="pipeline-step">
+        <div class="pipeline-marker">
+          <div class="step-number">${s.step}</div>
+          ${i < data.description.steps.length - 1 ? '<div class="pipeline-line"></div>' : ''}
+        </div>
+        <div class="pipeline-content">
+          <h4>${s.name}</h4>
+          <div class="formula-box">${s.formula}</div>
+          <p>${s.explanation}</p>
+        </div>
+      </div>`).join('');
+
     document.getElementById('strategy-content').innerHTML = `
-      <div class="strategy-section"><h3>Ueberblick</h3><p>${data.description.overview}</p></div>
-      ${data.description.steps.map(s => `<div class="strategy-section"><h3><span class="step-number">${s.step}</span>${s.name}</h3><div class="formula-box">${s.formula}</div><p>${s.explanation}</p></div>`).join('')}
-      <div class="strategy-section"><h3>Warum es funktioniert</h3><p>${data.description.edge_source}</p></div>
-      <div class="strategy-section"><h3>Aktuelle Parameter</h3><div class="param-grid">${Object.entries(data.parameters).map(([k,v]) => `<div class="param-item"><label>${k.replace(/_/g,' ')}</label><div class="value">${typeof v === 'number' ? (v < 1 && v > 0 ? (v*100).toFixed(1)+'%' : v) : v}</div></div>`).join('')}</div></div>`;
-  } catch(e) { console.error(e); }
+      <div class="strategy-overview">
+        <div class="section-title" style="margin-bottom:var(--spacing-sm)">So funktioniert PULSE</div>
+        <p>${data.description.overview}</p>
+      </div>
+      <div class="section-title">Berechnungs-Pipeline</div>
+      <div class="pipeline">${stepsHtml}</div>
+      <div class="strategy-edge">
+        <h3>Edge-Quelle</h3>
+        <p>${data.description.edge_source}</p>
+      </div>`;
+
+    // Parameters
+    document.getElementById('strategy-params').innerHTML = Object.entries(data.parameters).map(([k, v]) => `
+      <div class="param-item">
+        <label>${k.replace(/_/g, ' ')}</label>
+        <div class="value">${typeof v === 'number' ? (v < 1 && v > 0 ? (v * 100).toFixed(1) + '%' : v) : v}</div>
+      </div>`).join('');
+  } catch (e) { console.error(e); }
 }
 
 // ============================================================
