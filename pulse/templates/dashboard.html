@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -473,15 +473,15 @@
 
 <div class="tabs">
   <div class="tab active" data-tab="live">Live Trading</div>
-  <div class="tab" data-tab="history">Historie</div>
-  <div class="tab" data-tab="strategy">Strategie & Formel</div>
+  <div class="tab" data-tab="history">History</div>
+  <div class="tab" data-tab="strategy">Strategy & Formula</div>
 </div>
 
 <div id="tab-live" class="content">
   <div class="charts-row">
     <div class="chart-section">
       <div class="chart-header">
-        <h3>Kapitalentwicklung</h3>
+        <h3>Capital Performance</h3>
         <span id="pnl-chart-value" class="chart-value" style="color:var(--accent)">EUR 1,000</span>
       </div>
       <div style="position:relative; height:240px;">
@@ -490,22 +490,22 @@
     </div>
     <div class="kpi-grid">
       <div class="kpi-item">
-        <div class="kpi-label">Kapital</div>
+        <div class="kpi-label">Capital</div>
         <div class="kpi-value" id="capital">EUR 1,000.00</div>
         <div class="kpi-sub" id="capital-pnl">+EUR 0.00 (0.00%)</div>
       </div>
       <div class="kpi-item">
-        <div class="kpi-label">Wetten</div>
+        <div class="kpi-label">Bets</div>
         <div class="kpi-value" id="total-bets">0</div>
         <div class="kpi-sub" id="win-lose">0W / 0L / 0 Pending</div>
       </div>
       <div class="kpi-item">
         <div class="kpi-label">Win Rate</div>
         <div class="kpi-value" id="win-rate">-</div>
-        <div class="kpi-sub">(irrelevant - EV zaehlt)</div>
+        <div class="kpi-sub">(irrelevant - EV matters)</div>
       </div>
       <div class="kpi-item">
-        <div class="kpi-label">Volatilitaet</div>
+        <div class="kpi-label">Volatility</div>
         <div class="kpi-value" id="volatility-val">-</div>
         <div class="kpi-sub" id="prices-info">-</div>
       </div>
@@ -518,7 +518,7 @@
         <div id="slug-label" class="interval-slug"></div>
         <div class="interval-prices">
           <div class="price-block">
-            <label>BTC Preis</label>
+            <label>BTC Price</label>
             <div class="price-val" id="live-btc-price">-</div>
           </div>
           <div class="price-block">
@@ -540,16 +540,16 @@
   </div>
 
   <div id="contracts-section">
-    <div class="section-title">Aktive Wetten</div>
+    <div class="section-title">Active Bets</div>
     <table class="contract-table" id="contracts-table">
       <thead>
         <tr>
-          <th>Richtung</th>
-          <th>Preis</th>
+          <th>Direction</th>
+          <th>Price</th>
           <th>Payout</th>
           <th>Sigma</th>
-          <th>Reale Prob.</th>
-          <th>Markt</th>
+          <th>Real Prob.</th>
+          <th>Market</th>
           <th>Edge</th>
           <th>EV/Dollar</th>
           <th>Order</th>
@@ -557,7 +557,7 @@
         </tr>
       </thead>
       <tbody id="contracts-body">
-        <tr><td colspan="10" style="color:var(--text-dim); text-align:center; padding:20px">Keine aktive Wette</td></tr>
+        <tr><td colspan="10" style="color:var(--text-dim); text-align:center; padding:20px">No active bets</td></tr>
       </tbody>
     </table>
     <div id="contract-note" style="font-size:11px; color:var(--text-dim); margin-top:6px; padding:0 2px;"></div>
@@ -567,23 +567,23 @@
 
 <div id="tab-history" class="content hidden">
   <div class="export-toolbar">
-    <div class="section-title" style="margin-bottom:0">Trade Historie</div>
+    <div class="section-title" style="margin-bottom:0">Trade History</div>
     <div class="export-buttons">
       <button class="export-btn" id="btn-csv" onclick="toggleExport('csv')">CSV</button>
       <button class="export-btn" id="btn-json" onclick="toggleExport('json')">JSON</button>
     </div>
   </div>
   <div class="raw-data-wrap" id="export-panel">
-    <button class="raw-copy-btn" id="export-copy-btn" onclick="copyExportPanel()" title="Kopieren"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+    <button class="raw-copy-btn" id="export-copy-btn" onclick="copyExportPanel()" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     <pre id="export-pre"></pre>
   </div>
   <table class="trade-table">
     <thead>
-      <tr><th>Zeit</th><th>Contract</th><th>Richtung</th><th>Order</th><th>BTC</th><th>Target</th><th>Edge</th><th>EV/Dollar</th><th>Sigma</th><th>Outcome</th><th>P&L</th></tr>
+      <tr><th>Time</th><th>Contract</th><th>Direction</th><th>Order</th><th>BTC</th><th>Target</th><th>Edge</th><th>EV/Dollar</th><th>Sigma</th><th>Outcome</th><th>P&L</th></tr>
     </thead>
     <tbody id="trade-history"></tbody>
   </table>
-  <div id="no-trades" style="padding:40px; text-align:center; color:var(--text-dim)">Noch keine Trades</div>
+  <div id="no-trades" style="padding:40px; text-align:center; color:var(--text-dim)">No trades yet</div>
   <div id="load-more-wrap" style="text-align:center; padding:var(--spacing-lg) 0; display:none;">
     <button id="load-more-btn" style="
       background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border);
@@ -591,14 +591,14 @@
       cursor: pointer; font-family: inherit; transition: all 0.15s;
     " onmouseover="this.style.background='var(--border-light)';this.style.color='var(--text)'"
        onmouseout="this.style.background='var(--surface-2)';this.style.color='var(--text-secondary)'"
-    >Weitere laden</button>
+    >Load more</button>
   </div>
 </div>
 
 <div id="tab-strategy" class="content hidden">
-  <div class="section-title">Aktive Parameter</div>
+  <div class="section-title">Active Parameters</div>
   <div class="param-grid" id="strategy-params" style="margin-bottom:var(--spacing-xl)"></div>
-  <div id="strategy-content"><div style="color: var(--text-dim)">Lade Strategie...</div></div>
+  <div id="strategy-content"><div style="color: var(--text-dim)">Loading strategy...</div></div>
 </div>
 
 <script>
@@ -706,7 +706,7 @@ setInterval(() => {
 // ============================================================
 function updateKPIs(data) {
   const cap = data.capital, stats = data.stats;
-  setVal('capital', `EUR ${cap.current.toLocaleString('de-DE', {minimumFractionDigits: 2})}`);
+  setVal('capital', `EUR ${cap.current.toLocaleString('en-US', {minimumFractionDigits: 2})}`);
   const pnlEl = document.getElementById('capital-pnl');
   const s = cap.pnl >= 0 ? '+' : '';
   pnlEl.textContent = `${s}EUR ${cap.pnl.toFixed(2)} (${s}${cap.pnl_pct.toFixed(2)}%)`;
@@ -755,7 +755,7 @@ function updateInterval(data) {
     distWrap.innerHTML = '';
     metricsRow.style.display = 'none';
     conclusionRow.style.display = 'none';
-    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">Keine aktive Wette</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">No active bets</td></tr>';
     noteEl.textContent = '';
     return;
   }
@@ -774,7 +774,7 @@ function updateInterval(data) {
 
   const m = (label, val) => `<div class="interval-metric"><div class="interval-metric-label">${label}</div><div class="interval-metric-value">${val}</div></div>`;
   metricsGrid.innerHTML = [
-    m('Richtung', `<span class="pill ${dirPill}" style="font-size:12px;padding:3px 12px">${a.direction.toUpperCase()}</span>`),
+    m('Direction', `<span class="pill ${dirPill}" style="font-size:12px;padding:3px 12px">${a.direction.toUpperCase()}</span>`),
     m('Contract', `$${a.contract_price.toFixed(2)}`),
     m('Payout', `${a.payout_multiplier.toFixed(1)}x`),
     m('Sigma', `${a.sigma_move.toFixed(2)}`),
@@ -790,7 +790,7 @@ function updateInterval(data) {
     conclusionRow.innerHTML = `<span style="color:${color}">${icon}&nbsp;&nbsp;${a.reason}</span>`;
     conclusionRow.style.display = 'block';
   } else if (a.should_bet) {
-    conclusionRow.innerHTML = `<span style="color:var(--green)">✓&nbsp;&nbsp;Edge gefunden — Bet wird platziert</span>`;
+    conclusionRow.innerHTML = `<span style="color:var(--green)">✓&nbsp;&nbsp;Edge found — placing bet</span>`;
     conclusionRow.style.display = 'block';
   } else {
     conclusionRow.style.display = 'none';
@@ -798,13 +798,19 @@ function updateInterval(data) {
 
   // Active bets table — show LOCKED-IN values from placed bets (not live)
   const currentSlug = data.current.slug;
-  const activeBets = data.recent_trades.filter(t => t.bet_placed && t.outcome === 'pending');
+  const nowTs = Math.floor(Date.now() / 1000);
+  const pendingBets = data.recent_trades.filter(t => t.bet_placed && t.outcome === 'pending');
 
-  if (activeBets.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">Keine aktive Wette</td></tr>';
+  // Split into current window (active) and expired windows (validating)
+  const activeBets = pendingBets.filter(t => t.event_slug === currentSlug);
+  const validatingBets = pendingBets.filter(t => t.event_slug !== currentSlug);
+  const allBets = [...activeBets, ...validatingBets];
+
+  if (allBets.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">No active bets</td></tr>';
     noteEl.textContent = '';
   } else {
-    tbody.innerHTML = activeBets.map(t => {
+    tbody.innerHTML = allBets.map(t => {
       const dp = t.direction === 'up' ? 'pill-up' : 'pill-down';
       const ep = (t.edge * 100).toFixed(2);
       const ew = Math.min(Math.abs(t.edge) * 500, 100);
@@ -813,7 +819,12 @@ function updateInterval(data) {
       const oc = t.order_type === 'maker' ? 'pill-maker' : 'pill-taker';
       const ev = t.ev_per_dollar || 0;
       const pm = t.payout_multiplier || (t.contract_price > 0 ? (1 / t.contract_price) : 0);
-      return `<tr>
+      const isValidating = t.event_slug !== currentSlug;
+      const statusPill = isValidating
+        ? '<span class="pill" style="background:rgba(129,140,248,0.1);color:#818cf8;border-color:rgba(129,140,248,0.3)">VALIDATING</span>'
+        : '<span class="pill" style="background:rgba(250,204,21,0.1);color:#facc15;border-color:rgba(250,204,21,0.3)">ACTIVE</span>';
+      const rowStyle = isValidating ? 'opacity:0.6' : '';
+      return `<tr style="${rowStyle}">
         <td><span class="pill ${dp}">${t.direction.toUpperCase()}</span></td>
         <td class="mono">$${(t.contract_price || 0).toFixed(2)}</td>
         <td>${pm.toFixed(1)}x</td>
@@ -823,7 +834,7 @@ function updateInterval(data) {
         <td class="${t.edge > 0 ? 'positive' : 'negative'}">${ep}% <span class="edge-bar"><span class="edge-bar-fill" style="width:${ew}%;background:${ec}"></span></span></td>
         <td class="${ev > 0 ? 'positive' : 'negative'}">$${ev > 0 ? '+' : ''}${ev.toFixed(4)}</td>
         <td><span class="pill ${oc}">${ot}</span></td>
-        <td><span class="pill" style="background:rgba(250,204,21,0.1);color:#facc15;border-color:rgba(250,204,21,0.3)">PENDING</span></td>
+        <td>${statusPill}</td>
       </tr>`;
     }).join('');
     noteEl.textContent = '';
@@ -846,8 +857,8 @@ function calcEMA(data, period) {
 function updatePnlChart(data) {
   if (!pnlChart) return;
   const curve = data.pnl_curve;
-  const now = new Date().toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' });
-  const labels = curve.map(p => new Date(p.time).toLocaleTimeString('de-DE', { hour:'2-digit', minute:'2-digit' }));
+  const now = new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' });
+  const labels = curve.map(p => new Date(p.time).toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' }));
   const values = curve.map(p => p.capital);
   if (!values.length || values[values.length - 1] !== data.capital.current) {
     labels.push(now); values.push(data.capital.current);
@@ -877,7 +888,7 @@ function updatePnlChart(data) {
   pnlChart.options.scales.y.min = Math.floor(mn - pnlPad);
   pnlChart.options.scales.y.max = Math.ceil(mx + pnlPad);
   pnlChart.update('none');
-  document.getElementById('pnl-chart-value').textContent = 'EUR ' + data.capital.current.toLocaleString('de-DE', { minimumFractionDigits: 2 });
+  document.getElementById('pnl-chart-value').textContent = 'EUR ' + data.capital.current.toLocaleString('en-US', { minimumFractionDigits: 2 });
   document.getElementById('pnl-chart-value').style.color = emaDir >= 0 ? 'var(--green)' : 'var(--red)';
 }
 
@@ -900,7 +911,7 @@ function updateTradeHistory(data) {
 
   const visible = allTrades.slice(0, historyVisible);
   tbody.innerHTML = visible.map(t => {
-    const time = t.time ? new Date(t.time).toLocaleTimeString('de-DE') : '-';
+    const time = t.time ? new Date(t.time).toLocaleTimeString('en-US') : '-';
     const pnl = t.pnl_usd || 0;
     return `<tr>
       <td>${time}</td>
@@ -921,13 +932,13 @@ function updateTradeHistory(data) {
   const btn = document.getElementById('load-more-btn');
   if (allTrades.length > historyVisible) {
     loadMoreWrap.style.display = 'block';
-    btn.textContent = `Weitere laden (${allTrades.length - historyVisible} verbleibend)`;
+    btn.textContent = `Load more (${allTrades.length - historyVisible} remaining)`;
     btn.disabled = false;
     btn.style.opacity = '1';
     btn.style.cursor = 'pointer';
   } else if (allTrades.length > 0) {
     loadMoreWrap.style.display = 'block';
-    btn.textContent = 'Alle Trades geladen';
+    btn.textContent = 'All trades loaded';
     btn.disabled = true;
     btn.style.opacity = '0.4';
     btn.style.cursor = 'default';
@@ -1053,14 +1064,14 @@ async function loadStrategy() {
 
     document.getElementById('strategy-content').innerHTML = `
       <div class="strategy-overview">
-        <div class="section-title" style="margin-bottom:var(--spacing-sm)">So funktioniert PULSE</div>
+        <div class="section-title" style="margin-bottom:var(--spacing-sm)">How PULSE Works</div>
         <p>${data.description.overview}</p>
       </div>
       <div class="strategy-edge">
-        <h3>Edge-Quelle</h3>
+        <h3>Edge Source</h3>
         <p>${data.description.edge_source}</p>
       </div>
-      <div class="section-title">Berechnungs-Pipeline</div>
+      <div class="section-title">Calculation Pipeline</div>
       <div class="pipeline">${stepsHtml}</div>`;
 
     // Parameters

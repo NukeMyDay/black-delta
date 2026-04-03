@@ -388,7 +388,7 @@ async def api_state():
 async def api_formula():
     return JSONResponse({
         "name": "PULSE Edge Formula",
-        "version": "Stufe 1+2",
+        "version": "Stage 1+2",
         "parameters": {
             "student_t_df": STUDENT_T_DF,
             "ewma_lambda": 0.94,
@@ -400,79 +400,78 @@ async def api_formula():
         },
         "description": {
             "overview": (
-                "PULSE berechnet die reale Wahrscheinlichkeit, dass BTC den "
-                "Target-Preis innerhalb des 5-Minuten-Fensters kreuzt. Wenn "
-                "diese Wahrscheinlichkeit hoeher ist als der Markt einpreist, "
-                "existiert ein Edge."
+                "PULSE calculates the real probability that BTC will cross "
+                "the target price within the 5-minute window. When this "
+                "probability is higher than what the market implies, "
+                "an edge exists."
             ),
             "steps": [
                 {
                     "step": 1,
-                    "name": "EWMA Volatilitaet",
+                    "name": "EWMA Volatility",
                     "formula": "var(t) = lambda * var(t-1) + (1-lambda) * r(t)^2",
                     "explanation": (
-                        "Exponentially Weighted Moving Average: Gewichtet "
-                        "aktuelle Preisbewegungen staerker als aeltere. "
-                        "Lambda=0.94 bedeutet die letzten ~17 Datenpunkte "
-                        "machen 50% der Varianz aus. Reagiert schnell auf "
-                        "Volatilitaets-Cluster (nach einem grossen Move ist "
-                        "der naechste grosse Move wahrscheinlicher)."
+                        "Exponentially Weighted Moving Average: Weights recent "
+                        "price movements more heavily than older ones. "
+                        "Lambda=0.94 means the last ~17 data points account "
+                        "for 50% of the variance. Reacts quickly to volatility "
+                        "clusters (after a large move, the next large move "
+                        "is more likely)."
                     ),
                 },
                 {
                     "step": 2,
-                    "name": "Sigma-Distanz",
+                    "name": "Sigma Distance",
                     "formula": "sigma = distance / (price * vol * sqrt(time_left))",
                     "explanation": (
-                        "Wie viele Standardabweichungen liegt der Target-Preis "
-                        "vom aktuellen Preis entfernt? Je niedriger der Sigma-"
-                        "Wert, desto wahrscheinlicher wird der Target gekreuzt."
+                        "How many standard deviations is the target price "
+                        "away from the current price? The lower the sigma "
+                        "value, the more likely the target will be crossed."
                     ),
                 },
                 {
                     "step": 3,
-                    "name": "Student-t Verteilung (Fat Tails)",
+                    "name": "Student-t Distribution (Fat Tails)",
                     "formula": "real_prob = student_t.cdf(-sigma, df=4)",
                     "explanation": (
-                        "Statt der Normalverteilung nutzen wir die Student-t "
-                        "Verteilung mit 4 Freiheitsgraden. Diese hat 'dickere "
-                        "Raender' (Fat Tails) — extreme Moves sind wahrschein-"
-                        "licher als die Normalverteilung vorhersagt. BTC bewegt "
-                        "sich tatsaechlich so: 3-Sigma Events passieren ~10x "
-                        "oefter als die Glockenkurve sagt."
+                        "Instead of the normal distribution, we use the "
+                        "Student-t distribution with 4 degrees of freedom. "
+                        "It has 'fatter tails' — extreme moves are more "
+                        "likely than the normal distribution predicts. BTC "
+                        "actually behaves this way: 3-sigma events occur "
+                        "~10x more often than the bell curve suggests."
                     ),
                 },
                 {
                     "step": 4,
                     "name": "Edge & Expected Value",
-                    "formula": "edge = real_prob - implied_prob; EV = prob * gewinn - (1-prob) * verlust",
+                    "formula": "edge = real_prob - implied_prob; EV = prob * profit - (1-prob) * loss",
                     "explanation": (
-                        "Edge = Differenz zwischen unserer Schaetzung und dem "
-                        "Marktpreis. EV = erwarteter Gewinn pro Dollar Einsatz. "
-                        "Wir wetten nur wenn beides positiv ist und der Edge "
-                        "ueber dem Minimum liegt."
+                        "Edge = difference between our estimate and the "
+                        "market price. EV = expected profit per dollar bet. "
+                        "We only bet when both are positive and the edge "
+                        "exceeds the minimum threshold."
                     ),
                 },
                 {
                     "step": 5,
-                    "name": "Hybrid Order Strategie",
+                    "name": "Hybrid Order Strategy",
                     "formula": "if time > 30s: maker (0% fee); else: taker (7.2%)",
                     "explanation": (
-                        "Frueh im Fenster platzieren wir Limit Orders (Maker) "
-                        "ohne Gebuehr. In den letzten 30 Sekunden wechseln wir "
-                        "zu Market Orders (Taker) falls der EV auch nach 7.2% "
-                        "Fee positiv bleibt."
+                        "Early in the window we place limit orders (maker) "
+                        "with no fee. In the last 30 seconds we switch to "
+                        "market orders (taker) if the EV remains positive "
+                        "after the 7.2% fee."
                     ),
                 },
             ],
             "edge_source": (
-                "Der Markt underpriced Tail Events systematisch. Menschen "
-                "bewerten unwahrscheinliche Ereignisse als noch unwahrschein-"
-                "licher als sie sind (Probability Neglect). Bei BTC 5-Min "
-                "Maerkten zeigt sich das besonders: Wenn BTC $80+ ueber dem "
-                "Target liegt, bietet der Markt z.B. 200x — impliziert 0.5%. "
-                "Statistisch liegt die reale Wahrscheinlichkeit aber bei "
-                "~2-3%. Diese Diskrepanz ist unser Gewinn."
+                "The market systematically underprices tail events. Humans "
+                "judge unlikely events as even more unlikely than they are "
+                "(probability neglect). This is especially visible in BTC "
+                "5-minute markets: when BTC is $80+ above the target, the "
+                "market offers e.g. 200x — implying 0.5%. Statistically, "
+                "the real probability is ~2-3%. This discrepancy is our edge."
             ),
         },
     })
