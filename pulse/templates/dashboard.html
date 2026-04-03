@@ -434,6 +434,23 @@
       font-size: 12px; outline: none; text-align: center;
     }
     .sizing-info input:focus { border-color: var(--accent); }
+    .follow-trades-header {
+      display: flex; align-items: center; gap: 12px; margin-top: var(--spacing-lg);
+      margin-bottom: var(--spacing-md); flex-wrap: wrap;
+    }
+    .follow-filters { display: flex; gap: 3px; }
+    .follow-filter-btn {
+      background: none; border: 1px solid transparent; color: var(--text-dim);
+      font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 4px;
+      cursor: pointer; font-family: inherit; transition: all 0.15s;
+    }
+    .follow-filter-btn:hover { color: var(--text); background: var(--surface-2); }
+    .follow-filter-btn.active { color: var(--accent); border-color: var(--accent); background: rgba(129,140,248,0.06); }
+    .follow-filter-sep { width: 1px; background: var(--border); margin: 0 4px; align-self: stretch; }
+    .follow-trade-count {
+      margin-left: auto; font-size: 11px; color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+    }
 
     /* --- TRADE HISTORY TABLE --- */
     .trade-table { width: 100%; border-collapse: collapse; }
@@ -795,7 +812,19 @@
   </table>
 
   <!-- Follow Trades -->
-  <div class="section-title" style="margin-top:var(--spacing-lg)">Copy Trades</div>
+  <div class="follow-trades-header">
+    <div class="section-title" style="margin-bottom:0">Copy Trades</div>
+    <div class="follow-filters">
+      <button class="follow-filter-btn active" data-filter="all" onclick="setFollowFilter('all')">All</button>
+      <button class="follow-filter-btn" data-filter="btc" onclick="setFollowFilter('btc')">BTC</button>
+      <button class="follow-filter-btn" data-filter="eth" onclick="setFollowFilter('eth')">ETH</button>
+      <span class="follow-filter-sep"></span>
+      <button class="follow-filter-btn" data-filter="win" onclick="setFollowFilter('win')">Wins</button>
+      <button class="follow-filter-btn" data-filter="lose" onclick="setFollowFilter('lose')">Losses</button>
+      <button class="follow-filter-btn" data-filter="pending" onclick="setFollowFilter('pending')">Pending</button>
+    </div>
+    <span class="follow-trade-count" id="follow-trade-count"></span>
+  </div>
   <table class="trade-table">
     <thead>
       <tr><th>Time</th><th>Source</th><th>Asset</th><th>Direction</th><th>Price</th><th>Payout</th><th>Source $</th><th>Our $</th><th>Outcome</th><th>P&L</th></tr>
@@ -803,6 +832,16 @@
     <tbody id="follow-trades-body"></tbody>
   </table>
   <div id="follow-no-trades" style="padding:40px; text-align:center; color:var(--text-dim)">No copy trades yet</div>
+  <div id="follow-show-more-wrap" style="text-align:center; padding:var(--spacing-lg) 0; display:none;">
+    <button id="follow-show-more-btn" style="
+      background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border);
+      padding: 10px 32px; border-radius: 6px; font-size: 13px; font-weight: 500;
+      cursor: pointer; font-family: inherit; transition: all 0.15s;
+    " onmouseover="this.style.background='var(--border-light)';this.style.color='var(--text)'"
+       onmouseout="this.style.background='var(--surface-2)';this.style.color='var(--text-secondary)'"
+       onclick="followShowMore()"
+    ></button>
+  </div>
 </div>
 
 <div id="tab-strategy" class="content hidden">
@@ -1344,6 +1383,9 @@ async function loadStrategy() {
 //  FOLLOW TAB
 // ============================================================
 let lastFollowData = null;
+let followFilter = 'all';
+let followVisible = 20;
+const FOLLOW_PAGE_SIZE = 20;
 
 async function pollFollow() {
   try {
@@ -1431,14 +1473,30 @@ function updateFollowTab(data) {
   // Trades table
   const tradesBody = document.getElementById('follow-trades-body');
   const noTrades = document.getElementById('follow-no-trades');
-  const trades = data.trades || [];
+  const showMoreWrap = document.getElementById('follow-show-more-wrap');
+  const showMoreBtn = document.getElementById('follow-show-more-btn');
+  const countEl = document.getElementById('follow-trade-count');
+  const allTrades = data.trades || [];
+  const trades = filterFollowTrades(allTrades);
+
+  countEl.textContent = followFilter === 'all'
+    ? `${allTrades.length} total`
+    : `${trades.length} / ${allTrades.length}`;
 
   if (trades.length === 0) {
     tradesBody.innerHTML = '';
     noTrades.style.display = 'block';
+    showMoreWrap.style.display = 'none';
   } else {
     noTrades.style.display = 'none';
-    tradesBody.innerHTML = trades.slice(0, 50).map(t => {
+    const remaining = trades.length - followVisible;
+    if (remaining > 0) {
+      showMoreWrap.style.display = 'block';
+      showMoreBtn.textContent = `Show more +${remaining}`;
+    } else {
+      showMoreWrap.style.display = 'none';
+    }
+    tradesBody.innerHTML = trades.slice(0, followVisible).map(t => {
       const time = t.time ? new Date(t.time).toLocaleString('en-US', {
         month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
       }) : '-';
@@ -1497,6 +1555,39 @@ function updateFollowTab(data) {
       </tr>`;
     }).join('');
   }
+}
+
+// ============================================================
+//  FOLLOW FILTER & PAGINATION
+// ============================================================
+function setFollowFilter(f) {
+  followFilter = f;
+  followVisible = FOLLOW_PAGE_SIZE;
+  document.querySelectorAll('.follow-filter-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === f);
+  });
+  if (lastFollowData) updateFollowTab(lastFollowData);
+}
+
+function followShowMore() {
+  followVisible += FOLLOW_PAGE_SIZE;
+  if (lastFollowData) updateFollowTab(lastFollowData);
+}
+
+function filterFollowTrades(trades) {
+  if (followFilter === 'all') return trades;
+  return trades.filter(t => {
+    const slug = (t.event_slug || t.slug || '').toLowerCase();
+    const title = (t.title || '').toLowerCase();
+    switch (followFilter) {
+      case 'btc': return slug.includes('btc') || title.includes('bitcoin');
+      case 'eth': return slug.includes('eth') || title.includes('ethereum');
+      case 'win': return t.outcome === 'win';
+      case 'lose': return t.outcome === 'lose';
+      case 'pending': return t.outcome === 'pending';
+      default: return true;
+    }
+  });
 }
 
 // ============================================================
