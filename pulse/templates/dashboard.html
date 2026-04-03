@@ -185,20 +185,12 @@
       border-radius: var(--radius);
       overflow: hidden;
     }
-    .interval-header-top {
-      display: grid;
-      grid-template-columns: 1fr auto 1fr;
-      align-items: center;
-      gap: var(--spacing-lg);
+
+    /* Row 1: Market context */
+    .interval-row1 {
+      display: flex; justify-content: space-between; align-items: center;
       padding: var(--spacing-md) var(--spacing-lg);
     }
-    .interval-header-bottom {
-      display: none;
-      padding: 10px var(--spacing-lg) 12px;
-      border-top: 1px solid var(--border);
-      background: rgba(255,255,255,0.015);
-    }
-
     .interval-slug {
       font-size: 10px; color: var(--text-dim);
       font-family: 'JetBrains Mono', monospace;
@@ -221,9 +213,8 @@
     }
     .distance-badge.positive { background: rgba(74,222,128,0.08); color: var(--green); }
     .distance-badge.negative { background: rgba(248,113,113,0.08); color: var(--red); }
-
     .interval-timer {
-      display: flex; flex-direction: column; align-items: center; gap: 6px;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
     }
     .countdown {
       font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums;
@@ -237,32 +228,40 @@
     }
     .time-bar-fill { height: 100%; border-radius: 2px; transition: width 1s linear; }
 
-    .interval-signal {
-      display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+    /* Row 2: Analysis metrics */
+    .interval-row2 {
+      display: none;
+      padding: 0 var(--spacing-lg) var(--spacing-md);
     }
-    .bet-signal {
-      display: inline-flex; align-items: center; padding: 6px 16px;
-      border-radius: 6px; font-weight: 700; font-size: 12px; letter-spacing: 0.8px;
+    .interval-metrics {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
     }
-    .bet-signal.bet { background: rgba(74,222,128,0.1); color: var(--green); }
-    .bet-signal.skip { background: rgba(96,96,112,0.05); color: var(--text-dim); }
-
-    .live-metrics {
-      display: flex; flex-wrap: wrap; gap: 6px 24px; align-items: center;
+    .interval-metric {
+      padding: 10px 14px;
+      border-right: 1px solid var(--border);
+      text-align: center;
     }
-    .live-metric {
-      display: flex; flex-direction: column; gap: 2px;
-    }
-    .live-metric-label {
+    .interval-metric:last-child { border-right: none; }
+    .interval-metric-label {
       font-size: 9px; text-transform: uppercase; letter-spacing: 0.6px;
-      color: var(--text-dim); font-weight: 600;
+      color: var(--text-dim); font-weight: 600; margin-bottom: 4px;
     }
-    .live-metric-value {
-      font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums;
+    .interval-metric-value {
+      font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums;
     }
-    .live-conclusion {
-      margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
-      font-size: 12px; color: var(--text-secondary); line-height: 1.4;
+
+    /* Row 3: Conclusion */
+    .interval-row3 {
+      display: none;
+      padding: 10px var(--spacing-lg) 12px;
+      border-top: 1px solid var(--border);
+      background: rgba(255,255,255,0.015);
+      font-size: 12.5px; line-height: 1.4;
     }
 
     /* --- CONTRACT TABLE --- */
@@ -450,10 +449,11 @@
     @media (max-width: 900px) {
       .charts-row { grid-template-columns: 1fr; }
       .kpi-grid { grid-template-columns: 1fr 1fr; }
-      .interval-header-top { grid-template-columns: 1fr 1fr; grid-template-rows: auto auto; }
-      .interval-timer { grid-column: 2; grid-row: 1; align-items: flex-end; }
-      .interval-signal { grid-column: 1 / -1; grid-row: 2; align-items: flex-start; flex-direction: row; flex-wrap: wrap; gap: var(--spacing-sm); }
-      .live-metrics { flex-wrap: wrap; }
+      .interval-row1 { flex-direction: column; gap: var(--spacing-md); align-items: flex-start; }
+      .interval-timer { flex-direction: row; gap: var(--spacing-md); align-self: flex-start; }
+      .interval-metrics { grid-template-columns: repeat(3, 1fr); }
+      .interval-metric:nth-child(3) { border-right: none; }
+      .interval-metric:nth-child(n+4) { border-top: 1px solid var(--border); }
       .content { padding: var(--spacing-lg) var(--spacing-md); }
       .export-toolbar { flex-direction: column; align-items: flex-start; }
       .pipeline-step { grid-template-columns: 36px 1fr; }
@@ -513,7 +513,7 @@
   </div>
 
   <div class="interval-header" id="interval-header">
-    <div class="interval-header-top">
+    <div class="interval-row1">
       <div>
         <div id="slug-label" class="interval-slug"></div>
         <div class="interval-prices">
@@ -532,14 +532,11 @@
         <div id="countdown-value" class="countdown normal">-:--</div>
         <div class="time-bar"><div id="time-bar-fill" class="time-bar-fill" style="width:100%;background:var(--accent)"></div></div>
       </div>
-      <div class="interval-signal">
-        <div id="bet-signal-container"></div>
-        <div id="live-analysis-grid" class="live-metrics"></div>
-      </div>
     </div>
-    <div id="live-analysis-row" class="interval-header-bottom">
-      <div id="live-conclusion" class="live-conclusion"></div>
+    <div class="interval-row2" id="live-metrics-row">
+      <div class="interval-metrics" id="live-metrics-grid"></div>
     </div>
+    <div class="interval-row3" id="live-conclusion-row"></div>
   </div>
 
   <div id="contracts-section">
@@ -741,15 +738,14 @@ function setVal(id, v) {
 // ============================================================
 function updateInterval(data) {
   const a = data.current.analysis;
-  const sigEl = document.getElementById('bet-signal-container');
   const slugEl = document.getElementById('slug-label');
   const targetEl = document.getElementById('live-target-price');
   const distWrap = document.getElementById('live-distance-wrap');
   const tbody = document.getElementById('contracts-body');
   const noteEl = document.getElementById('contract-note');
-  const liveGrid = document.getElementById('live-analysis-grid');
-  const liveRow = document.getElementById('live-analysis-row');
-  const liveConclusion = document.getElementById('live-conclusion');
+  const metricsRow = document.getElementById('live-metrics-row');
+  const metricsGrid = document.getElementById('live-metrics-grid');
+  const conclusionRow = document.getElementById('live-conclusion-row');
 
   feedBtcPrice(data.current.btc_price, data.current.target_price);
 
@@ -757,8 +753,8 @@ function updateInterval(data) {
     slugEl.textContent = '';
     targetEl.textContent = '-';
     distWrap.innerHTML = '';
-    sigEl.innerHTML = '';
-    liveRow.style.display = 'none';
+    metricsRow.style.display = 'none';
+    conclusionRow.style.display = 'none';
     tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-dim);text-align:center;padding:20px">Keine aktive Wette</td></tr>';
     noteEl.textContent = '';
     return;
@@ -770,39 +766,34 @@ function updateInterval(data) {
   const dist = a.distance;
   distWrap.innerHTML = `<span class="distance-badge ${dist > 0 ? 'positive' : 'negative'}">$${dist > 0 ? '+' : ''}${dist.toFixed(2)}</span>`;
 
-  const betClass = a.should_bet ? 'bet' : 'skip';
-  const betText = a.should_bet ? `BET ${a.direction.toUpperCase()}` : 'SKIP';
-  const orderPill = a.order_type === 'maker' ? ' <span class="pill pill-maker">MAKER</span>' : a.order_type === 'taker' ? ' <span class="pill pill-taker">TAKER</span>' : '';
-  sigEl.innerHTML = `<span class="bet-signal ${betClass}">${betText}</span>${orderPill}`;
-
-  // Live analysis metrics (right column)
+  // Row 2: Analysis metrics
+  metricsRow.style.display = 'block';
   const dirPill = a.direction === 'up' ? 'pill-up' : 'pill-down';
-  const edgePct = (a.edge * 100).toFixed(2);
+  const edgePct = (a.edge * 100).toFixed(1);
   const edgeC = a.edge > 0 ? 'var(--green)' : 'var(--red)';
-  const evC = a.ev_per_dollar_maker > 0 ? 'var(--green)' : 'var(--red)';
 
-  const m = (label, val) => `<div class="live-metric"><div class="live-metric-label">${label}</div><div class="live-metric-value">${val}</div></div>`;
-  liveGrid.innerHTML = [
-    m('Richtung', `<span class="pill ${dirPill}" style="font-size:11px;padding:2px 8px">${a.direction.toUpperCase()}</span>`),
+  const m = (label, val) => `<div class="interval-metric"><div class="interval-metric-label">${label}</div><div class="interval-metric-value">${val}</div></div>`;
+  metricsGrid.innerHTML = [
+    m('Richtung', `<span class="pill ${dirPill}" style="font-size:12px;padding:3px 12px">${a.direction.toUpperCase()}</span>`),
     m('Contract', `$${a.contract_price.toFixed(2)}`),
     m('Payout', `${a.payout_multiplier.toFixed(1)}x`),
-    m('Sigma', a.sigma_move.toFixed(2)),
-    m('Prob.', `${(a.real_prob * 100).toFixed(1)}% <span style="color:var(--text-dim);font-weight:400">vs</span> ${(a.implied_prob * 100).toFixed(1)}%`),
+    m('Sigma', `${a.sigma_move.toFixed(2)}`),
+    m('Prob.', `${(a.real_prob * 100).toFixed(1)}% <span style="color:var(--text-dim);font-weight:400;font-size:11px">vs</span> ${(a.implied_prob * 100).toFixed(1)}%`),
     m('Edge', `<span style="color:${edgeC}">${edgePct}%</span>`),
-    m('EV/Dollar', `<span style="color:${evC}">$${a.ev_per_dollar_maker > 0 ? '+' : ''}${a.ev_per_dollar_maker.toFixed(4)}</span>`),
   ].join('');
 
-  // Conclusion footer
-  liveRow.style.display = 'block';
+  // Row 3: Conclusion
   if (a.reason) {
     const isSkip = !a.should_bet;
     const icon = isSkip ? '⏸' : '✓';
     const color = isSkip ? 'var(--text-secondary)' : 'var(--green)';
-    liveConclusion.innerHTML = `<span style="color:${color}">${icon}&nbsp;&nbsp;${a.reason}</span>`;
+    conclusionRow.innerHTML = `<span style="color:${color}">${icon}&nbsp;&nbsp;${a.reason}</span>`;
+    conclusionRow.style.display = 'block';
   } else if (a.should_bet) {
-    liveConclusion.innerHTML = `<span style="color:var(--green)">✓&nbsp;&nbsp;Edge gefunden — Bet wird platziert</span>`;
+    conclusionRow.innerHTML = `<span style="color:var(--green)">✓&nbsp;&nbsp;Edge gefunden — Bet wird platziert</span>`;
+    conclusionRow.style.display = 'block';
   } else {
-    liveRow.style.display = 'none';
+    conclusionRow.style.display = 'none';
   }
 
   // Active bets table — show LOCKED-IN values from placed bets (not live)
