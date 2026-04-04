@@ -31,7 +31,11 @@ from collections import deque
 from datetime import datetime, timezone
 
 # --- Bet Sizing (all overridable via .env) ---
-WIN_RATE = float(os.getenv("SIGNAL_WIN_RATE", "0.70"))
+# Separate win rates per tier (empirical from 47 signals):
+#   Full tier (entry < 0.60): 55% accuracy — contrarian bets
+#   Half tier (0.60-0.70):    83% accuracy — consensus confirmation
+WIN_RATE_FULL = float(os.getenv("SIGNAL_WIN_RATE_FULL", "0.57"))
+WIN_RATE_HALF = float(os.getenv("SIGNAL_WIN_RATE_HALF", "0.75"))
 KELLY_SAFETY = float(os.getenv("SIGNAL_KELLY_FRACTION", "0.125"))  # ⅛-Kelly (conservative for €1k)
 ENTRY_FULL = float(os.getenv("SIGNAL_ENTRY_FULL", "0.60"))
 ENTRY_HALF = float(os.getenv("SIGNAL_ENTRY_HALF", "0.70"))
@@ -435,13 +439,13 @@ class SignalAggregator:
         }
 
     def _compute_bet_sizing(self, avg_entry_price: float):
-        """Compute bet size using Quarter-Kelly with entry-price tiers.
+        """Compute bet size using Kelly with tier-specific win rates.
 
         Returns (entry_tier, bet_pct, bet_usd).
-        Tiers:
-          "full" (entry < 0.60): full Quarter-Kelly
-          "half" (0.60 <= entry < 0.70): half Quarter-Kelly
-          "skip" (entry >= 0.70): no bet (Kelly ~0 at 70% WR)
+        Each tier uses its own empirical win rate for Kelly calculation:
+          "full"  (entry < 0.60): WIN_RATE_FULL (57%) — contrarian, lower accuracy
+          "half"  (0.60-0.70):    WIN_RATE_HALF (75%) — consensus, higher accuracy
+          "skip"  (>= 0.70):     no bet
         """
         if avg_entry_price >= ENTRY_HALF:
             return "skip", 0.0, 0.0
@@ -451,17 +455,17 @@ class SignalAggregator:
         if b <= 0:
             return "skip", 0.0, 0.0
 
-        p = WIN_RATE
+        # Tier-specific win rate — Kelly sizes correctly per population
+        if avg_entry_price < ENTRY_FULL:
+            tier = "full"
+            p = WIN_RATE_FULL
+        else:
+            tier = "half"
+            p = WIN_RATE_HALF
+
         q = 1 - p
         kelly = max(0, (p * b - q) / b)
         fraction = kelly * KELLY_SAFETY
-
-        # Entry price tier: reduce sizing for marginal entries
-        if avg_entry_price < ENTRY_FULL:
-            tier = "full"
-        else:
-            tier = "half"
-            fraction *= 0.5
 
         bet_usd = round(self.sim_capital * fraction, 2)
         return tier, round(fraction * 100, 2), bet_usd
@@ -545,7 +549,8 @@ class SignalAggregator:
                     "bet_min_elapsed": BET_MIN_ELAPSED,
                     "entry_full": ENTRY_FULL,
                     "entry_half": ENTRY_HALF,
-                    "win_rate": WIN_RATE,
+                    "win_rate_full": WIN_RATE_FULL,
+                    "win_rate_half": WIN_RATE_HALF,
                     "kelly_fraction": KELLY_SAFETY,
                 },
                 "stats": {
