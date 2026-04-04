@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 data/*.json
+!data/follow_wallets.json
 data/*.csv
 logs/*.log
 .venv/
