@@ -6,16 +6,22 @@ trades from monitored wallets into a per-window directional signal.
 
 Flow:
   RTDS trade -> SignalAggregator.ingest(trade) -> per-window accumulator
-  When bias crosses threshold -> signal emitted -> on_signal callback
+  Scout (30s / 8 trades) -> Direction Flip Check (90s / 15+ trades) -> Bet
 
 Designed for wallets like Bonereaper that trade BOTH sides simultaneously
 and build directional positions over time within each 5-min window.
 
-Signal quality tiers (based on empirical data):
-  bias < 95%  = "high" quality (~90% accuracy) — both-sides trading
-  bias >= 95% = "low" quality (~50% accuracy)  — one-sided, often noise
+Strategy (Scout + Flip Detection + Entry-Price Sizing):
+  1. Scout at 30s / 8 trades: record dominant direction (internal, no bet)
+  2. At 90s / 15+ trades: check if direction flipped since scout
+     - If flipped -> suppress signal (bias was unstable)
+     - If stable -> compute entry price, size bet accordingly
+  3. Entry-price-based Kelly sizing:
+     - avg_entry < 0.60: full Quarter-Kelly (best EV)
+     - 0.60 <= avg_entry < 0.70: half Quarter-Kelly (marginal EV)
+     - avg_entry >= 0.70: skip (zero/negative EV at 70% win rate)
 
-Bet sizing uses Quarter-Kelly based on estimated win rate per tier.
+  Result: 1 signal per window max. Direction flips = no bet.
 """
 
 import threading
@@ -23,22 +29,36 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
-# --- Quality & Bet Sizing ---
-QUALITY_BIAS_CUTOFF = 0.95       # bias >= this → low quality
-HIGH_QUALITY_WIN_RATE = 0.65     # empirical rate from 28 signals (bias < 95%)
-KELLY_SAFETY = 0.25              # Quarter-Kelly for small sample sizes
-MAX_ENTRY_PRICE = 0.75           # signals with avg entry price > this have negative EV
-SIM_START_CAPITAL = 1000.0       # Starting capital for simulation
+# --- Bet Sizing ---
+WIN_RATE = 0.70              # empirical from 30 signals (bug-corrected)
+KELLY_SAFETY = 0.25          # Quarter-Kelly for small sample sizes
+ENTRY_FULL = 0.60            # avg_entry < this -> full Quarter-Kelly
+ENTRY_HALF = 0.70            # 0.60 <= avg_entry < this -> half Quarter-Kelly
+                              # avg_entry >= 0.70 -> skip (Kelly ~0 at 70% WR)
+SIM_START_CAPITAL = 1000.0
+
+# --- Scout + Bet Thresholds ---
+SCOUT_MIN_ELAPSED = 30       # seconds into window before scouting
+SCOUT_MIN_TRADES = 8         # minimum trades before scout fires
+BET_MIN_ELAPSED = 90         # seconds into window before bet fires
+BET_MIN_TRADES = 15          # minimum trades before bet fires
 
 
 class WindowAccumulator:
-    """Accumulates trades for a single market window (slug)."""
+    """Accumulates trades for a single market window (slug).
+
+    Two internal stages:
+      1. Scout (30s/8 trades): records direction, internal only
+      2. Bet (90s/15+ trades): emits signal if direction stable + entry OK
+    """
 
     __slots__ = (
         "slug", "window_start", "window_duration",
         "up_usdc", "down_usdc", "up_shares", "down_shares",
         "trade_count", "first_trade_ts", "last_trade_ts",
-        "signal_emitted", "signal_direction",
+        "scouted", "scout_direction",
+        "bet_emitted", "signal_direction",
+        "direction_flipped", "skip_reason",
         "latency_samples",
     )
 
@@ -53,9 +73,31 @@ class WindowAccumulator:
         self.trade_count = 0
         self.first_trade_ts = 0.0
         self.last_trade_ts = 0.0
-        self.signal_emitted = False
+        self.scouted: bool = False
+        self.scout_direction: str | None = None
+        self.bet_emitted: bool = False
         self.signal_direction: str | None = None
+        self.direction_flipped: bool = False
+        self.skip_reason: str | None = None  # "flip", "entry_high", "bias_low"
         self.latency_samples: list[float] = []
+
+    @property
+    def signal_emitted(self) -> bool:
+        """Backward compat: True if a bet signal was emitted."""
+        return self.bet_emitted
+
+    @property
+    def status(self) -> str:
+        """Human-readable window status."""
+        if self.direction_flipped:
+            return "flipped"
+        if self.bet_emitted:
+            return "confirmed"
+        if self.skip_reason:
+            return "skipped"
+        if self.scouted:
+            return "scouting"
+        return "accumulating"
 
     @staticmethod
     def _parse_window_start(slug: str) -> int:
@@ -129,6 +171,16 @@ class WindowAccumulator:
             return 0
         return sum(self.latency_samples) / len(self.latency_samples)
 
+    def get_avg_entry_price(self, direction: str) -> float:
+        """Average entry price for the dominant direction."""
+        if direction == "up":
+            price = (self.up_usdc / self.up_shares
+                     if self.up_shares > 0 else 0.5)
+        else:
+            price = (self.down_usdc / self.down_shares
+                     if self.down_shares > 0 else 0.5)
+        return max(0.01, min(0.99, price))
+
     def to_dict(self) -> dict:
         return {
             "slug": self.slug,
@@ -145,20 +197,26 @@ class WindowAccumulator:
             "dominant": self.dominant_direction,
             "dominant_pct": round(self.dominant_pct, 1),
             "trade_count": self.trade_count,
-            "signal_emitted": self.signal_emitted,
+            "signal_emitted": self.bet_emitted,
             "signal_direction": self.signal_direction,
             "avg_latency_ms": round(self.avg_latency_ms, 1),
+            # Scout + Flip Detection
+            "status": self.status,
+            "scouted": self.scouted,
+            "scout_direction": self.scout_direction,
+            "direction_flipped": self.direction_flipped,
+            "skip_reason": self.skip_reason,
         }
 
 
 class SignalAggregator:
     """Aggregates RTDS trades into per-window directional signals.
 
+    Strategy: Scout → Flip Check → Entry-Price-Based Bet (max 1 per window).
+
     Config:
-        min_trades:      Minimum trades before a signal can fire
-        min_usdc:        Minimum total USDC volume before signal fires
+        min_usdc:        Minimum total USDC volume before any action
         bias_threshold:  Bias must exceed this to emit (0.5-1.0, default 0.65)
-        min_elapsed_s:   Minimum seconds into window before signal fires
         only_5m:         Only process 5-minute markets (ignore 15m)
 
     Callback:
@@ -169,21 +227,22 @@ class SignalAggregator:
         self._lock = threading.Lock()
 
         # Config with defaults
-        self.min_trades = config.get("min_trades", 8)
         self.min_usdc = config.get("min_usdc", 50.0)
         self.bias_threshold = config.get("bias_threshold", 0.65)
-        self.min_elapsed_s = config.get("min_elapsed_s", 30)
         self.only_5m = config.get("only_5m", True)
 
         # Active windows: slug -> WindowAccumulator
         self._windows: dict[str, WindowAccumulator] = {}
 
-        # Signal history (most recent first)
+        # Signal history (most recent first) — only actual bet signals
         self.signals: deque[dict] = deque(maxlen=500)
 
         # Stats
         self.total_trades_ingested = 0
         self.total_signals_emitted = 0
+        self.total_scouts = 0
+        self.total_flips = 0
+        self.total_skips = 0
 
         # Outcome tracking
         self.total_resolved = 0
@@ -205,17 +264,13 @@ class SignalAggregator:
     #  Config
     # ------------------------------------------------------------------
     def update_config(self, **kwargs):
-        if "min_trades" in kwargs:
-            self.min_trades = max(1, int(kwargs["min_trades"]))
         if "min_usdc" in kwargs:
             self.min_usdc = max(0, float(kwargs["min_usdc"]))
         if "bias_threshold" in kwargs:
             self.bias_threshold = max(0.51, min(0.99, float(kwargs["bias_threshold"])))
-        if "min_elapsed_s" in kwargs:
-            self.min_elapsed_s = max(0, float(kwargs["min_elapsed_s"]))
         if "only_5m" in kwargs:
             self.only_5m = bool(kwargs["only_5m"])
-        # sim_stake removed — stake is now 1:1 with actual source volume
+        # Legacy compat: ignore min_trades / min_elapsed_s (now fixed constants)
 
     # ------------------------------------------------------------------
     #  Trade ingestion (called from FollowFeed callback)
@@ -251,76 +306,119 @@ class SignalAggregator:
             win = self._windows[slug]
             win.add(trade)
 
-            # Check if signal should fire
-            if not win.signal_emitted:
-                signal = self._check_signal(win)
-                if signal:
-                    win.signal_emitted = True
-                    win.signal_direction = signal["direction"]
-                    self.signals.appendleft(signal)
-                    self.total_signals_emitted += 1
+            # Check for signal progression
+            signal = self._check_signal(win)
+            if signal:
+                self.signals.appendleft(signal)
+                self.total_signals_emitted += 1
 
-                    # Fire callback outside lock to avoid deadlocks
-                    callback = self.on_signal
-                    if callback:
-                        try:
-                            callback(signal)
-                        except Exception as e:
-                            print(f"[SIGNAL] Callback error: {e}")
+                callback = self.on_signal
+                if callback:
+                    try:
+                        callback(signal)
+                    except Exception as e:
+                        print(f"[SIGNAL] Callback error: {e}")
 
             # Cleanup expired windows (older than 10 minutes)
             self._cleanup()
 
     def _check_signal(self, win: WindowAccumulator) -> dict | None:
-        """Check if a window has accumulated enough to emit a signal."""
-        if win.trade_count < self.min_trades:
-            return None
-        if win.total_usdc < self.min_usdc:
-            return None
-        if win.window_elapsed < self.min_elapsed_s:
-            return None
-        if win.dominant_pct / 100 < self.bias_threshold:
+        """Two-stage signal check: Scout → Flip Check → Bet.
+
+        Returns a signal dict if a bet should be placed, None otherwise.
+        Scout is internal only (no signal emitted to history).
+        """
+        # Already emitted or terminated?
+        if win.bet_emitted or win.direction_flipped or win.skip_reason:
             return None
 
-        # Window still has time left? (don't signal expired markets)
+        # Window expired?
         if win.window_remaining <= 0:
+            return None
+
+        # Minimum volume
+        if win.total_usdc < self.min_usdc:
             return None
 
         direction = win.dominant_direction
         bias = win.bias if direction == "up" else (1.0 - win.bias)
 
-        # Actual average entry price from trades (usdc / shares for dominant side)
-        if direction == "up":
-            avg_entry_price = (win.up_usdc / win.up_shares
-                               if win.up_shares > 0 else 0.5)
-        else:
-            avg_entry_price = (win.down_usdc / win.down_shares
-                               if win.down_shares > 0 else 0.5)
-        avg_entry_price = max(0.01, min(0.99, avg_entry_price))
+        # --- Stage 1: Scout ---
+        if not win.scouted:
+            if (win.trade_count >= SCOUT_MIN_TRADES
+                    and win.window_elapsed >= SCOUT_MIN_ELAPSED
+                    and bias >= self.bias_threshold):
+                win.scouted = True
+                win.scout_direction = direction
+                self.total_scouts += 1
+                print(f"[SIGNAL] SCOUT: {direction.upper()} {bias:.0%} "
+                      f"on {win.slug} ({win.trade_count} trades, "
+                      f"{win.window_elapsed:.0f}s)")
+            return None  # Scout never emits a signal
 
-        # Quality tier: both-sides trading (bias < 95%) is far more predictive
-        quality = "low" if bias >= QUALITY_BIAS_CUTOFF else "high"
+        # --- Stage 2: Bet check ---
+        if win.trade_count < BET_MIN_TRADES:
+            return None
+        if win.window_elapsed < BET_MIN_ELAPSED:
+            return None
+
+        # Direction flip check
+        if direction != win.scout_direction:
+            win.direction_flipped = True
+            win.skip_reason = "flip"
+            self.total_flips += 1
+            print(f"[SIGNAL] DIRECTION FLIP on {win.slug}: "
+                  f"scout={win.scout_direction.upper()} → "
+                  f"now={direction.upper()} — NO BET")
+            return None
+
+        # Bias threshold check (may have weakened since scout)
+        if bias < self.bias_threshold:
+            win.skip_reason = "bias_low"
+            self.total_skips += 1
+            print(f"[SIGNAL] BIAS TOO LOW on {win.slug}: "
+                  f"{bias:.0%} < {self.bias_threshold:.0%} — NO BET")
+            return None
+
+        # Compute entry price and bet sizing
+        avg_entry_price = win.get_avg_entry_price(direction)
+        entry_tier, suggested_bet_pct, suggested_bet_usd = \
+            self._compute_bet_sizing(avg_entry_price)
+
+        if entry_tier == "skip":
+            win.skip_reason = "entry_high"
+            self.total_skips += 1
+            print(f"[SIGNAL] ENTRY TOO HIGH on {win.slug}: "
+                  f"${avg_entry_price:.2f} >= ${ENTRY_HALF:.2f} — NO BET")
+            return None
+
+        # --- Emit signal ---
+        win.bet_emitted = True
+        win.signal_direction = direction
 
         # Confidence: composite score from bias strength, trade count, and volume
         bias_score = (bias - 0.5) / 0.5  # 0.0 at 50%, 1.0 at 100%
         count_score = min(1.0, win.trade_count / 30)  # saturates at 30 trades
         volume_score = min(1.0, win.total_usdc / 300)  # saturates at $300
-        confidence = round(bias_score * 0.5 + count_score * 0.25 + volume_score * 0.25, 3)
+        confidence = round(bias_score * 0.5 + count_score * 0.25
+                          + volume_score * 0.25, 3)
 
-        # Optimal bet sizing (Quarter-Kelly) based on quality tier
-        suggested_bet_pct, suggested_bet_usd = self._compute_bet_sizing(
-            quality, avg_entry_price)
+        print(f"[SIGNAL] BET: {direction.upper()} on {win.slug} "
+              f"(entry=${avg_entry_price:.2f}, tier={entry_tier}, "
+              f"bet=${suggested_bet_usd:.2f}, bias={bias:.0%}, "
+              f"{win.trade_count} trades, {win.window_elapsed:.0f}s)")
 
         return {
             "slug": win.slug,
             "event_slug": win.slug,  # compatible with PULSE
             "direction": direction,
-            "quality": quality,
             "confidence": confidence,
             "bias": round(bias, 4),
             "avg_entry_price": round(avg_entry_price, 4),
+            "entry_tier": entry_tier,
             "suggested_bet_pct": suggested_bet_pct,
             "suggested_bet_usd": suggested_bet_usd,
+            "scout_direction": win.scout_direction,
             "up_usdc": round(win.up_usdc, 2),
             "down_usdc": round(win.down_usdc, 2),
             "total_usdc": round(win.total_usdc, 2),
@@ -336,32 +434,37 @@ class SignalAggregator:
             "time": datetime.now(timezone.utc).isoformat(),
         }
 
-    def _compute_bet_sizing(self, quality: str, avg_entry_price: float):
-        """Compute optimal bet size using Quarter-Kelly criterion.
+    def _compute_bet_sizing(self, avg_entry_price: float):
+        """Compute bet size using Quarter-Kelly with entry-price tiers.
 
-        Returns (bet_pct, bet_usd) where bet_pct is % of current capital.
-        Skips signals that are low quality or have entry price too high
-        (negative EV at current estimated win rate).
+        Returns (entry_tier, bet_pct, bet_usd).
+        Tiers:
+          "full" (entry < 0.60): full Quarter-Kelly
+          "half" (0.60 <= entry < 0.70): half Quarter-Kelly
+          "skip" (entry >= 0.70): no bet (Kelly ~0 at 70% WR)
         """
-        if quality == "low":
-            return 0.0, 0.0
-
-        # Signals at high entry prices have negative EV
-        if avg_entry_price > MAX_ENTRY_PRICE:
-            return 0.0, 0.0
+        if avg_entry_price >= ENTRY_HALF:
+            return "skip", 0.0, 0.0
 
         # Net payout odds: win $1/share at cost avg_entry_price
         b = (1.0 / avg_entry_price - 1) if avg_entry_price > 0.01 else 0
         if b <= 0:
-            return 0.0, 0.0
+            return "skip", 0.0, 0.0
 
-        p = HIGH_QUALITY_WIN_RATE
+        p = WIN_RATE
         q = 1 - p
         kelly = max(0, (p * b - q) / b)
         fraction = kelly * KELLY_SAFETY
 
+        # Entry price tier: reduce sizing for marginal entries
+        if avg_entry_price < ENTRY_FULL:
+            tier = "full"
+        else:
+            tier = "half"
+            fraction *= 0.5
+
         bet_usd = round(self.sim_capital * fraction, 2)
-        return round(fraction * 100, 2), bet_usd
+        return tier, round(fraction * 100, 2), bet_usd
 
     def _cleanup(self):
         """Remove windows older than 10 minutes past their end."""
@@ -404,34 +507,52 @@ class SignalAggregator:
             accuracy = (self.total_correct / self.total_resolved * 100
                        if self.total_resolved > 0 else 0)
 
-            # Quality breakdown
-            high_total = sum(1 for s in self.signals
-                             if s.get("outcome") in ("correct", "wrong")
-                             and s.get("quality") == "high")
-            high_correct = sum(1 for s in self.signals
-                               if s.get("outcome") == "correct"
-                               and s.get("quality") == "high")
-            low_total = sum(1 for s in self.signals
-                            if s.get("outcome") in ("correct", "wrong")
-                            and s.get("quality") == "low")
-            low_correct = sum(1 for s in self.signals
-                              if s.get("outcome") == "correct"
-                              and s.get("quality") == "low")
+            # Entry tier breakdown (only resolved signals)
+            tier_full = {"total": 0, "correct": 0}
+            tier_half = {"total": 0, "correct": 0}
+            for s in self.signals:
+                if s.get("outcome") not in ("correct", "wrong"):
+                    continue
+                tier = s.get("entry_tier", "")
+                if tier == "full":
+                    tier_full["total"] += 1
+                    if s["outcome"] == "correct":
+                        tier_full["correct"] += 1
+                elif tier == "half":
+                    tier_half["total"] += 1
+                    if s["outcome"] == "correct":
+                        tier_half["correct"] += 1
+            tier_full["accuracy"] = (round(tier_full["correct"] / tier_full["total"] * 100, 1)
+                                     if tier_full["total"] > 0 else 0)
+            tier_half["accuracy"] = (round(tier_half["correct"] / tier_half["total"] * 100, 1)
+                                     if tier_half["total"] > 0 else 0)
+
+            # Count direction flips in active windows
+            direction_flips = sum(
+                1 for w in self._windows.values() if w.direction_flipped)
 
             roi_pct = ((self.sim_capital - SIM_START_CAPITAL) /
                        SIM_START_CAPITAL * 100)
 
             return {
                 "config": {
-                    "min_trades": self.min_trades,
                     "min_usdc": self.min_usdc,
                     "bias_threshold": self.bias_threshold,
-                    "min_elapsed_s": self.min_elapsed_s,
                     "only_5m": self.only_5m,
+                    "scout_min_trades": SCOUT_MIN_TRADES,
+                    "scout_min_elapsed": SCOUT_MIN_ELAPSED,
+                    "bet_min_trades": BET_MIN_TRADES,
+                    "bet_min_elapsed": BET_MIN_ELAPSED,
+                    "entry_full": ENTRY_FULL,
+                    "entry_half": ENTRY_HALF,
+                    "win_rate": WIN_RATE,
                 },
                 "stats": {
                     "total_trades_ingested": self.total_trades_ingested,
                     "total_signals_emitted": self.total_signals_emitted,
+                    "total_scouts": self.total_scouts,
+                    "total_flips": self.total_flips,
+                    "total_skips": self.total_skips,
                     "active_windows": len(active_dicts),
                     "avg_latency_ms": round(avg_latency, 1),
                     "total_resolved": self.total_resolved,
@@ -441,10 +562,9 @@ class SignalAggregator:
                     "sim_pnl": round(self.sim_pnl, 2),
                     "sim_capital": round(self.sim_capital, 2),
                     "roi_pct": round(roi_pct, 2),
-                    "quality_high": {"total": high_total, "correct": high_correct,
-                                     "accuracy": round(high_correct / high_total * 100, 1) if high_total > 0 else 0},
-                    "quality_low": {"total": low_total, "correct": low_correct,
-                                    "accuracy": round(low_correct / low_total * 100, 1) if low_total > 0 else 0},
+                    "direction_flips": direction_flips,
+                    "entry_tier_full": tier_full,
+                    "entry_tier_half": tier_half,
                 },
                 "windows": active_dicts,
                 "signals": list(self.signals),
@@ -468,8 +588,7 @@ class SignalAggregator:
                     sig["outcome"] = "correct" if correct else "wrong"
                     sig["market_winner"] = market_winner
 
-                    entry_price = sig.get("avg_entry_price") or sig.get("bias", 0.65)
-                    # Use Kelly-sized stake for sim P&L (0 for low quality)
+                    entry_price = sig.get("avg_entry_price", 0.5)
                     stake = sig.get("suggested_bet_usd", 0)
 
                     if correct:
@@ -486,7 +605,6 @@ class SignalAggregator:
                         self.sim_capital += pnl
                         self.sim_total_invested += stake
                     else:
-                        pnl = 0
                         sig["sim_pnl"] = 0
 
                     sig["sim_entry_price"] = round(entry_price, 4)
@@ -496,7 +614,7 @@ class SignalAggregator:
                         "capital": round(self.sim_capital, 2),
                         "pnl": round(self.sim_pnl, 2),
                     })
-                    break
+                    break  # 1 signal per window
 
     def get_pending_slugs(self) -> list[str]:
         """Return slugs of signals awaiting resolution."""
@@ -552,12 +670,11 @@ class SignalAggregator:
             }
 
     def get_active_signal(self, slug: str) -> dict | None:
-        """Get the current signal for a specific market slug, if any."""
+        """Get the active signal for a specific market slug, if any."""
         with self._lock:
             win = self._windows.get(slug)
-            if not win or not win.signal_emitted:
+            if not win or not win.bet_emitted:
                 return None
-            # Find the matching signal
             for sig in self.signals:
                 if sig["slug"] == slug:
                     return sig

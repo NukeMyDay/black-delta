@@ -852,23 +852,27 @@ def resolve_signal_pending(btc_feed: BTCFeed):
 
 
 def _handle_signal(signal: dict):
-    """Callback when Signal module emits a directional signal."""
+    """Callback when Signal module emits a bet signal.
+
+    Called once per window (after scout + flip check pass).
+    """
     direction = signal.get("direction", "?").upper()
     confidence = signal.get("confidence", 0)
     bias = signal.get("bias", 0)
     slug = signal.get("slug", "")
+    bet_usd = signal.get("suggested_bet_usd", 0)
+    entry_tier = signal.get("entry_tier", "?")
+    entry_price = signal.get("avg_entry_price", 0)
+    trades = signal.get("trade_count", 0)
     elapsed = signal.get("window_elapsed_s", 0)
     remaining = signal.get("window_remaining_s", 0)
-    latency = signal.get("avg_latency_ms", 0)
-    trades = signal.get("trade_count", 0)
 
-    print(f"[SIGNAL] {direction} on {slug} "
-          f"(conf={confidence:.2f}, bias={bias:.0%}, "
-          f"{trades} trades, {elapsed:.0f}s in, {remaining:.0f}s left, "
-          f"latency={latency:.0f}ms)")
+    print(f"[SIGNAL] BET {direction} on {slug} "
+          f"(entry=${entry_price:.2f} [{entry_tier}], "
+          f"bet=${bet_usd:.2f}, bias={bias:.0%}, "
+          f"{trades} trades, {elapsed:.0f}s in, {remaining:.0f}s left)")
 
     # Post-hoc annotation: PULSE may have placed its bet before this signal fired.
-    # Retroactively annotate any pending PULSE trade on the same slug.
     if slug:
         sig_dir = signal.get("direction", "")
         for trade in state.trades:
@@ -881,7 +885,8 @@ def _handle_signal(signal: dict):
                 trade["signal_confidence"] = confidence
                 if agrees:
                     state.combined_bets += 1
-                    print(f"[SIGNAL] Retroactively annotated PULSE bet on {slug} as COMBINED")
+                    print(f"[SIGNAL] Retroactively annotated PULSE bet on {slug} "
+                          f"as COMBINED")
 
 
 def _state_saver_loop(interval: int = 60):

@@ -931,24 +931,35 @@
       <div class="follow-stat-value" id="signal-correct-wrong">0 / 0</div>
     </div>
     <div class="follow-stat-card">
-      <div class="follow-stat-label">Signals</div>
-      <div class="follow-stat-value" id="signal-total">0</div>
+      <div class="follow-stat-label">Bets / Scouts</div>
+      <div class="follow-stat-value" id="signal-total">0 / 0</div>
     </div>
     <div class="follow-stat-card">
       <div class="follow-stat-label">Pending</div>
       <div class="follow-stat-value" id="signal-pending">0</div>
     </div>
     <div class="follow-stat-card">
-      <div class="follow-stat-label">Avg Latency</div>
-      <div class="follow-stat-value" id="signal-avg-latency">--</div>
+      <div class="follow-stat-label">Dir. Flips</div>
+      <div class="follow-stat-value" id="signal-dir-flips" style="color:var(--red)">0</div>
     </div>
-    <div class="follow-stat-card">
-      <div class="follow-stat-label">High Quality</div>
-      <div class="follow-stat-value" id="signal-quality-high" style="color:var(--green)">--</div>
+  </div>
+
+  <!-- Entry Price Tier Breakdown -->
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:var(--spacing-md)">
+    <div style="background:var(--surface);border:1px solid var(--green);border-radius:var(--radius);padding:10px 14px;text-align:center">
+      <div style="font-size:9px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:0.5px">Full Kelly (entry &lt; $0.60)</div>
+      <div id="signal-tier-full" style="font-size:16px;font-weight:700;color:var(--text);font-family:'JetBrains Mono',monospace">--</div>
+      <div style="font-size:9px;color:var(--text-dim)">best EV — full Quarter-Kelly</div>
     </div>
-    <div class="follow-stat-card">
-      <div class="follow-stat-label">Low Quality</div>
-      <div class="follow-stat-value" id="signal-quality-low" style="color:var(--red)">--</div>
+    <div style="background:var(--surface);border:1px solid #f59e0b;border-radius:var(--radius);padding:10px 14px;text-align:center">
+      <div style="font-size:9px;font-weight:600;color:#f59e0b;text-transform:uppercase;letter-spacing:0.5px">Half Kelly ($0.60–$0.70)</div>
+      <div id="signal-tier-half" style="font-size:16px;font-weight:700;color:var(--text);font-family:'JetBrains Mono',monospace">--</div>
+      <div style="font-size:9px;color:var(--text-dim)">marginal EV — half sizing</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;text-align:center">
+      <div style="font-size:9px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px">Skipped / Flipped</div>
+      <div id="signal-tier-skip" style="font-size:16px;font-weight:700;color:var(--text-dim);font-family:'JetBrains Mono',monospace">--</div>
+      <div style="font-size:9px;color:var(--text-dim)">entry too high or direction flip</div>
     </div>
   </div>
 
@@ -958,13 +969,11 @@
     <input type="range" id="signal-bias-slider" min="51" max="90" value="65" step="1"
       style="width:100px;accent-color:var(--accent)" oninput="updateSignalThresholdLabel(this.value)">
     <span id="signal-bias-label" style="font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--accent);min-width:36px">65%</span>
-    <label style="color:var(--text-secondary);font-size:11px;font-weight:600;margin-left:16px">MIN TRADES</label>
-    <input type="number" id="signal-min-trades-input" value="8" min="1" max="50" step="1"
-      style="width:60px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:'JetBrains Mono',monospace;font-size:12px">
     <label style="color:var(--text-secondary);font-size:11px;font-weight:600;margin-left:16px">MIN USDC</label>
     <input type="number" id="signal-min-usdc-input" value="50" min="0" max="500" step="10"
       style="width:70px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:'JetBrains Mono',monospace;font-size:12px">
     <button onclick="applySignalConfig()" style="padding:5px 14px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">Apply</button>
+    <span style="color:var(--text-dim);font-size:10px;margin-left:8px">Scout: 30s/8 trades → Bet: 90s/15+ trades | Win Rate: 70% | Kelly: ¼</span>
   </div>
 
   <!-- Active Windows -->
@@ -979,7 +988,8 @@
       <th>Time</th>
       <th>Market</th>
       <th>Direction</th>
-      <th>Quality</th>
+      <th>Entry $</th>
+      <th>Tier</th>
       <th>Outcome</th>
       <th>Sim P&L</th>
       <th>Bet Size</th>
@@ -2025,19 +2035,35 @@ function updateSignalTab(data) {
 
   document.getElementById('signal-correct-wrong').textContent =
     `${stats.correct || 0} / ${stats.wrong || 0}`;
-  document.getElementById('signal-total').textContent = stats.total_signals_emitted || 0;
+  document.getElementById('signal-total').textContent =
+    `${stats.total_signals_emitted || 0} / ${stats.total_scouts || 0}`;
   document.getElementById('signal-pending').textContent =
     (stats.total_signals_emitted || 0) - (stats.total_resolved || 0);
-  document.getElementById('signal-avg-latency').textContent =
-    stats.avg_latency_ms > 0 ? `${stats.avg_latency_ms.toFixed(0)} ms` : '--';
 
-  // Quality breakdown
-  const qh = stats.quality_high || {};
-  const ql = stats.quality_low || {};
-  document.getElementById('signal-quality-high').textContent =
-    qh.total > 0 ? `${qh.accuracy}% (${qh.correct}/${qh.total})` : '--';
-  document.getElementById('signal-quality-low').textContent =
-    ql.total > 0 ? `${ql.accuracy}% (${ql.correct}/${ql.total})` : '--';
+  // Direction flips
+  const flipsEl = document.getElementById('signal-dir-flips');
+  const totalFlips = (stats.total_flips || 0) + (stats.direction_flips || 0);
+  flipsEl.textContent = totalFlips;
+  flipsEl.style.color = totalFlips > 0 ? 'var(--red)' : 'var(--text-dim)';
+
+  // Entry tier breakdown
+  const tf = stats.entry_tier_full || {};
+  const th = stats.entry_tier_half || {};
+  const tierFullEl = document.getElementById('signal-tier-full');
+  const tierHalfEl = document.getElementById('signal-tier-half');
+  const tierSkipEl = document.getElementById('signal-tier-skip');
+
+  if (tf.total > 0) {
+    tierFullEl.textContent = `${tf.accuracy}% (${tf.correct}/${tf.total})`;
+    tierFullEl.style.color = tf.accuracy >= 56 ? 'var(--green)' : 'var(--red)';
+  } else { tierFullEl.textContent = '--'; tierFullEl.style.color = 'var(--text)'; }
+
+  if (th.total > 0) {
+    tierHalfEl.textContent = `${th.accuracy}% (${th.correct}/${th.total})`;
+    tierHalfEl.style.color = th.accuracy >= 56 ? 'var(--green)' : 'var(--red)';
+  } else { tierHalfEl.textContent = '--'; tierHalfEl.style.color = 'var(--text)'; }
+
+  tierSkipEl.textContent = `${stats.total_flips || 0} flips / ${stats.total_skips || 0} skips`;
 
   // Active Windows Grid
   const grid = document.getElementById('signal-windows-grid');
@@ -2055,20 +2081,55 @@ function updateSignalTab(data) {
       const elapsed = w.window_elapsed.toFixed(0);
       const remaining = w.window_remaining.toFixed(0);
       const isExpired = w.window_remaining <= 0;
-      const signalBadge = w.signal_emitted
-        ? `<span style="background:${w.signal_direction === 'up' ? 'rgba(74,222,128,0.15)' : 'rgba(248,113,113,0.15)'};color:${w.signal_direction === 'up' ? 'var(--green)' : 'var(--red)'};padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px">${w.signal_direction.toUpperCase()} SIGNAL</span>`
-        : '<span style="color:var(--text-dim);font-size:10px">accumulating...</span>';
 
-      const slugShort = w.slug.replace('btc-updown-', 'BTC ').replace('eth-updown-', 'ETH ');
+      // Status badge
+      const st = w.status || 'accumulating';
+      const statusMap = {
+        accumulating: { bg: 'transparent', col: 'var(--text-dim)', text: 'ACCUMULATING' },
+        scouting: { bg: 'rgba(99,102,241,0.15)', col: '#818cf8', text: `SCOUTING ${(w.scout_direction || '').toUpperCase()}` },
+        confirmed: { bg: w.signal_direction === 'up' ? 'rgba(74,222,128,0.15)' : 'rgba(248,113,113,0.15)',
+                     col: w.signal_direction === 'up' ? 'var(--green)' : 'var(--red)',
+                     text: `${(w.signal_direction || '').toUpperCase()} BET` },
+        flipped: { bg: 'rgba(248,113,113,0.1)', col: 'var(--red)', text: 'FLIPPED' },
+        skipped: { bg: 'transparent', col: 'var(--text-dim)', text: `SKIP (${w.skip_reason || '?'})` },
+      };
+      const sBadge = statusMap[st] || statusMap.accumulating;
+      const statusHtml = `<span style="background:${sBadge.bg};color:${sBadge.col};padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px">${sBadge.text}</span>`;
 
-      return `<div style="background:var(--surface);border:1px solid ${w.signal_emitted ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;${isExpired ? 'opacity:0.5' : ''}">
+      // 2-step progress: SCOUT → BET
+      const scoutDone = w.scouted;
+      const betDone = w.signal_emitted;
+      const stepScout = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700;background:${scoutDone ? '#6366f1' : 'transparent'};color:${scoutDone ? '#fff' : 'var(--text-dim)'};border:1px solid ${scoutDone ? '#6366f1' : 'var(--border)'}">SCOUT</span>`;
+      const betCol = w.direction_flipped ? 'var(--red)' : (betDone ? 'var(--green)' : 'var(--border)');
+      const betText = w.direction_flipped ? 'FLIP' : (betDone ? 'BET' : 'BET');
+      const betBg = w.direction_flipped ? 'rgba(248,113,113,0.2)' : (betDone ? 'var(--green)' : 'transparent');
+      const stepBet = `<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700;background:${betBg};color:${(betDone || w.direction_flipped) ? '#fff' : 'var(--text-dim)'};border:1px solid ${betCol}">${betText}</span>`;
+      const arrow = `<span style="color:var(--text-dim);font-size:9px">→</span>`;
+
+      // Bet countdown (if scouted but not yet bet)
+      let betCountdown = '';
+      if (scoutDone && !betDone && !w.direction_flipped && !w.skip_reason && !isExpired) {
+        const needTrades = Math.max(0, 15 - w.trade_count);
+        const needTime = Math.max(0, 90 - parseFloat(elapsed));
+        const parts = [];
+        if (needTrades > 0) parts.push(`${needTrades} trades`);
+        if (needTime > 0) parts.push(`${needTime.toFixed(0)}s`);
+        if (parts.length) betCountdown = `<div style="font-size:9px;color:var(--text-dim);margin-top:4px">Bet in: ${parts.join(' + ')}</div>`;
+      }
+
+      const slugShort = w.slug.replace('btc-updown-', 'BTC ').replace('eth-updown-', 'ETH ').replace('btc-up-down-', 'BTC ').replace('eth-up-down-', 'ETH ');
+
+      const borderCol = w.direction_flipped ? 'var(--red)' : (betDone ? 'var(--accent)' : scoutDone ? '#6366f1' : 'var(--border)');
+
+      return `<div style="background:var(--surface);border:1px solid ${borderCol};border-radius:var(--radius);padding:14px 16px;${isExpired ? 'opacity:0.5' : ''}${w.direction_flipped ? ';opacity:0.6' : ''}">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
           <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:var(--text)">${slugShort}</span>
-          ${signalBadge}
+          ${statusHtml}
         </div>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
           <span style="font-size:22px;font-weight:800;color:${biasColor};font-family:'JetBrains Mono',monospace">${biasDir} ${biasPct}%</span>
         </div>
+        <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px">${stepScout} ${arrow} ${stepBet}</div>
         <div style="background:var(--surface-2);border-radius:4px;height:6px;overflow:hidden;margin-bottom:8px">
           <div style="height:100%;width:${barPct}%;background:${biasColor};border-radius:4px;transition:width 0.3s"></div>
         </div>
@@ -2080,6 +2141,7 @@ function updateSignalTab(data) {
           <div>${remaining}s left</div>
           <div>${w.avg_latency_ms > 0 ? w.avg_latency_ms.toFixed(0) + ' ms' : '--'}</div>
         </div>
+        ${betCountdown}
       </div>`;
     }).join('');
   }
@@ -2099,16 +2161,18 @@ function updateSignalTab(data) {
       const dirColor = dir === 'UP' ? 'var(--green)' : 'var(--red)';
       const t = new Date(s.time);
       const timeStr = t.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      const slugShort = s.slug.replace('btc-updown-', 'BTC ').replace('eth-updown-', 'ETH ');
+      const slugShort = s.slug.replace('btc-updown-', 'BTC ').replace('eth-updown-', 'ETH ').replace('btc-up-down-', 'BTC ').replace('eth-up-down-', 'ETH ');
 
-      const quality = s.quality || 'low';
-      const qualityHtml = quality === 'high'
-        ? '<span style="color:var(--green);font-weight:700;font-size:10px">HIGH</span>'
-        : '<span style="color:var(--text-dim);font-size:10px">LOW</span>';
+      // Entry price + tier
+      const entry = s.avg_entry_price || 0;
+      const tier = s.entry_tier || '?';
+      const tierColors = { full: 'var(--green)', half: '#f59e0b' };
+      const tierCol = tierColors[tier] || 'var(--text-dim)';
+      const tierHtml = `<span style="color:${tierCol};font-weight:700;font-size:10px;text-transform:uppercase">${tier}</span>`;
 
       const betHtml = s.suggested_bet_usd > 0
         ? `<span style="font-family:'JetBrains Mono',monospace;color:var(--accent)">$${s.suggested_bet_usd.toFixed(0)}</span>`
-        : '<span style="color:var(--text-dim)">skip</span>';
+        : '<span style="color:var(--text-dim)">--</span>';
 
       let outcomeHtml, pnlHtml;
       if (s.outcome === 'correct') {
@@ -2126,11 +2190,12 @@ function updateSignalTab(data) {
         pnlHtml = '<span style="color:var(--text-dim)">--</span>';
       }
 
-      return `<tr style="${quality === 'low' ? 'opacity:0.5' : ''}">
+      return `<tr>
         <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${timeStr}</td>
         <td style="font-size:11px">${slugShort}</td>
         <td style="color:${dirColor};font-weight:700">${dir}</td>
-        <td>${qualityHtml}</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:11px">$${entry.toFixed(2)}</td>
+        <td>${tierHtml}</td>
         <td>${outcomeHtml}</td>
         <td>${pnlHtml}</td>
         <td>${betHtml}</td>
@@ -2182,13 +2247,12 @@ function updateSignalThresholdLabel(val) {
 
 async function applySignalConfig() {
   const bias = parseInt(document.getElementById('signal-bias-slider').value) / 100;
-  const minTrades = parseInt(document.getElementById('signal-min-trades-input').value);
   const minUsdc = parseFloat(document.getElementById('signal-min-usdc-input').value);
   try {
     await fetch('/api/signal/config', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bias_threshold: bias, min_trades: minTrades, min_usdc: minUsdc }),
+      body: JSON.stringify({ bias_threshold: bias, min_usdc: minUsdc }),
     });
     pollSignal();
   } catch (e) { console.error('Signal config:', e); }
