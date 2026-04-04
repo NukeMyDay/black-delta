@@ -915,8 +915,8 @@
       <div class="follow-stat-value" id="signal-accuracy">--%</div>
     </div>
     <div class="follow-stat-card">
-      <div class="follow-stat-label">Sim P&L</div>
-      <div class="follow-stat-value" id="signal-sim-pnl">$0</div>
+      <div class="follow-stat-label">Sim ROI</div>
+      <div class="follow-stat-value" id="signal-sim-pnl">--%</div>
     </div>
     <div class="follow-stat-card">
       <div class="follow-stat-label">Correct / Wrong</div>
@@ -1166,11 +1166,16 @@ function updateKPIs(data) {
     const ss = lastSignalData.stats;
     const sigN = ss.total_resolved || 0;
     const sigWr = sigN > 0 ? `${ss.accuracy}%` : '--';
-    const sigPnl = ss.sim_pnl || 0;
+    const sigRoi = ss.roi_pct ?? null;
     document.getElementById('compare-signal-wr').textContent = sigWr;
     const sigPnlEl = document.getElementById('compare-signal-pnl');
-    sigPnlEl.textContent = `${sigPnl >= 0 ? '+' : ''}$${sigPnl.toFixed(2)}`;
-    sigPnlEl.style.color = sigPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    if (sigRoi === null || sigN === 0) {
+      sigPnlEl.textContent = '--%';
+      sigPnlEl.style.color = 'var(--text-dim)';
+    } else {
+      sigPnlEl.textContent = `${sigRoi >= 0 ? '+' : ''}${sigRoi.toFixed(2)}% ROI`;
+      sigPnlEl.style.color = sigRoi >= 0 ? 'var(--green)' : 'var(--red)';
+    }
     document.getElementById('compare-signal-n').textContent = `${sigN} resolved / ${ss.total_signals_emitted || 0} signals`;
   }
 }
@@ -1944,9 +1949,14 @@ function updateSignalTab(data) {
   accEl.style.color = acc >= 56 ? 'var(--green)' : acc > 0 ? 'var(--red)' : 'var(--text)';
 
   const pnlEl = document.getElementById('signal-sim-pnl');
-  const simPnl = stats.sim_pnl || 0;
-  pnlEl.textContent = `$${simPnl >= 0 ? '+' : ''}${simPnl.toFixed(2)}`;
-  pnlEl.style.color = simPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const roiPct = stats.roi_pct ?? null;
+  if (roiPct === null || stats.total_resolved === 0) {
+    pnlEl.textContent = '--%';
+    pnlEl.style.color = 'var(--text)';
+  } else {
+    pnlEl.textContent = `${roiPct >= 0 ? '+' : ''}${roiPct.toFixed(2)}%`;
+    pnlEl.style.color = roiPct >= 0 ? 'var(--green)' : 'var(--red)';
+  }
 
   document.getElementById('signal-correct-wrong').textContent =
     `${stats.correct || 0} / ${stats.wrong || 0}`;

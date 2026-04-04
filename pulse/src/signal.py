@@ -162,7 +162,6 @@ class SignalAggregator:
         self.bias_threshold = config.get("bias_threshold", 0.65)
         self.min_elapsed_s = config.get("min_elapsed_s", 30)
         self.only_5m = config.get("only_5m", True)
-        self.sim_stake = config.get("sim_stake", 20.0)
 
         # Active windows: slug -> WindowAccumulator
         self._windows: dict[str, WindowAccumulator] = {}
@@ -179,12 +178,11 @@ class SignalAggregator:
         self.total_correct = 0
         self.total_wrong = 0
         self.sim_pnl = 0.0
-        self.sim_capital = 1000.0
-        self.sim_start_capital = 1000.0
+        self.sim_total_invested = 0.0  # cumulative USDC deployed (1:1 with Bonereaper)
         self.pnl_curve: deque[dict] = deque(maxlen=2000)
         self.pnl_curve.append({
             "time": datetime.now(timezone.utc).isoformat(),
-            "capital": 1000.0, "pnl": 0,
+            "roi_pct": 0.0, "pnl": 0.0, "invested": 0.0,
         })
 
         # Callback
@@ -204,6 +202,7 @@ class SignalAggregator:
             self.min_elapsed_s = max(0, float(kwargs["min_elapsed_s"]))
         if "only_5m" in kwargs:
             self.only_5m = bool(kwargs["only_5m"])
+        # sim_stake removed — stake is now 1:1 with actual source volume
 
     # ------------------------------------------------------------------
     #  Trade ingestion (called from FollowFeed callback)
@@ -226,8 +225,8 @@ class SignalAggregator:
         if self.only_5m and "-5m-" not in slug:
             return
 
-        # Filter: only BTC/ETH updown markets
-        if "updown" not in slug:
+        # Filter: only BTC/ETH up/down markets (covers both "updown" and "up-down" slug variants)
+        if "updown" not in slug and "up-down" not in slug:
             return
 
         with self._lock:
@@ -352,7 +351,6 @@ class SignalAggregator:
                     "bias_threshold": self.bias_threshold,
                     "min_elapsed_s": self.min_elapsed_s,
                     "only_5m": self.only_5m,
-                    "sim_stake": self.sim_stake,
                 },
                 "stats": {
                     "total_trades_ingested": self.total_trades_ingested,
@@ -364,7 +362,9 @@ class SignalAggregator:
                     "wrong": self.total_wrong,
                     "accuracy": round(accuracy, 1),
                     "sim_pnl": round(self.sim_pnl, 2),
-                    "sim_capital": round(self.sim_capital, 2),
+                    "sim_total_invested": round(self.sim_total_invested, 2),
+                    "roi_pct": round(self.sim_pnl / self.sim_total_invested * 100, 2)
+                              if self.sim_total_invested > 0 else 0,
                 },
                 "windows": active_dicts,
                 "signals": list(self.signals),
@@ -388,28 +388,30 @@ class SignalAggregator:
                     sig["outcome"] = "correct" if correct else "wrong"
                     sig["market_winner"] = market_winner
 
-                    # Simulated P&L: bet on signal direction at market price
-                    # Approximate: buy at dominant-side avg price from the window
+                    # Simulated P&L: 1:1 with Bonereaper's actual window volume
+                    stake = sig["total_usdc"]  # what he actually deployed
                     entry_price = sig.get("bias", 0.65)
                     if correct:
-                        # Won: payout is $1 per share, cost was entry_price
                         payout_mult = 1.0 / entry_price if entry_price > 0 else 1.0
-                        pnl = self.sim_stake * (payout_mult - 1)
+                        pnl = stake * (payout_mult - 1)
                         self.total_correct += 1
                     else:
-                        pnl = -self.sim_stake
+                        pnl = -stake
                         self.total_wrong += 1
 
                     sig["sim_pnl"] = round(pnl, 2)
                     sig["sim_entry_price"] = round(entry_price, 4)
                     self.sim_pnl += pnl
-                    self.sim_capital += pnl
+                    self.sim_total_invested += stake
                     self.total_resolved += 1
 
+                    roi_pct = (self.sim_pnl / self.sim_total_invested * 100
+                               if self.sim_total_invested > 0 else 0)
                     self.pnl_curve.append({
                         "time": datetime.now(timezone.utc).isoformat(),
-                        "capital": round(self.sim_capital, 2),
+                        "roi_pct": round(roi_pct, 2),
                         "pnl": round(self.sim_pnl, 2),
+                        "invested": round(self.sim_total_invested, 2),
                     })
                     break
 
@@ -451,6 +453,8 @@ class SignalAggregator:
                     "accuracy": round(correct / total * 100, 1) if total > 0 else 0,
                 }
 
+            roi_pct = (self.sim_pnl / self.sim_total_invested * 100
+                       if self.sim_total_invested > 0 else 0)
             return {
                 "total_resolved": self.total_resolved,
                 "correct": self.total_correct,
@@ -458,8 +462,8 @@ class SignalAggregator:
                 "pending": sum(1 for s in self.signals if s.get("outcome") == "pending"),
                 "accuracy": round(accuracy, 1),
                 "sim_pnl": round(self.sim_pnl, 2),
-                "sim_capital": round(self.sim_capital, 2),
-                "sim_stake": self.sim_stake,
+                "sim_total_invested": round(self.sim_total_invested, 2),
+                "roi_pct": round(roi_pct, 2),
                 "confidence_breakdown": conf_breakdown,
                 "pnl_curve": list(self.pnl_curve),
             }
