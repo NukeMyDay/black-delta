@@ -883,24 +883,24 @@
   <!-- Signal Stats -->
   <div class="follow-stats" id="signal-stats">
     <div class="follow-stat-card">
+      <div class="follow-stat-label">Accuracy</div>
+      <div class="follow-stat-value" id="signal-accuracy">--%</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Sim P&L</div>
+      <div class="follow-stat-value" id="signal-sim-pnl">$0</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Correct / Wrong</div>
+      <div class="follow-stat-value" id="signal-correct-wrong">0 / 0</div>
+    </div>
+    <div class="follow-stat-card">
       <div class="follow-stat-label">Signals</div>
       <div class="follow-stat-value" id="signal-total">0</div>
     </div>
     <div class="follow-stat-card">
-      <div class="follow-stat-label">Trades Ingested</div>
-      <div class="follow-stat-value" id="signal-ingested">0</div>
-    </div>
-    <div class="follow-stat-card">
-      <div class="follow-stat-label">Active Windows</div>
-      <div class="follow-stat-value" id="signal-active-windows">0</div>
-    </div>
-    <div class="follow-stat-card">
-      <div class="follow-stat-label">Bias Threshold</div>
-      <div class="follow-stat-value" id="signal-threshold">65%</div>
-    </div>
-    <div class="follow-stat-card">
-      <div class="follow-stat-label">Min Trades</div>
-      <div class="follow-stat-value" id="signal-min-trades">8</div>
+      <div class="follow-stat-label">Pending</div>
+      <div class="follow-stat-value" id="signal-pending">0</div>
     </div>
     <div class="follow-stat-card">
       <div class="follow-stat-label">Avg Latency</div>
@@ -935,12 +935,12 @@
       <th>Time</th>
       <th>Market</th>
       <th>Direction</th>
+      <th>Outcome</th>
+      <th>Sim P&L</th>
       <th>Confidence</th>
       <th>Bias</th>
       <th>Volume</th>
       <th>Trades</th>
-      <th>Elapsed</th>
-      <th>Remaining</th>
       <th>Latency</th>
     </tr></thead>
     <tbody id="signal-history-body"></tbody>
@@ -1861,12 +1861,22 @@ function updateSignalTab(data) {
   document.getElementById('signal-latency').textContent =
     stats.avg_latency_ms > 0 ? `${stats.avg_latency_ms.toFixed(0)} ms avg latency` : '-- ms';
 
-  // Stats
+  // Accuracy stats
+  const acc = stats.accuracy || 0;
+  const accEl = document.getElementById('signal-accuracy');
+  accEl.textContent = stats.total_resolved > 0 ? `${acc}%` : '--%';
+  accEl.style.color = acc >= 56 ? 'var(--green)' : acc > 0 ? 'var(--red)' : 'var(--text)';
+
+  const pnlEl = document.getElementById('signal-sim-pnl');
+  const simPnl = stats.sim_pnl || 0;
+  pnlEl.textContent = `$${simPnl >= 0 ? '+' : ''}${simPnl.toFixed(2)}`;
+  pnlEl.style.color = simPnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+  document.getElementById('signal-correct-wrong').textContent =
+    `${stats.correct || 0} / ${stats.wrong || 0}`;
   document.getElementById('signal-total').textContent = stats.total_signals_emitted || 0;
-  document.getElementById('signal-ingested').textContent = stats.total_trades_ingested || 0;
-  document.getElementById('signal-active-windows').textContent = stats.active_windows || 0;
-  document.getElementById('signal-threshold').textContent = `${(config.bias_threshold * 100).toFixed(0)}%`;
-  document.getElementById('signal-min-trades').textContent = config.min_trades || 0;
+  document.getElementById('signal-pending').textContent =
+    (stats.total_signals_emitted || 0) - (stats.total_resolved || 0);
   document.getElementById('signal-avg-latency').textContent =
     stats.avg_latency_ms > 0 ? `${stats.avg_latency_ms.toFixed(0)} ms` : '--';
 
@@ -1933,16 +1943,29 @@ function updateSignalTab(data) {
       const t = new Date(s.time);
       const timeStr = t.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       const slugShort = s.slug.replace('btc-updown-', 'BTC ').replace('eth-updown-', 'ETH ');
+
+      let outcomeHtml, pnlHtml;
+      if (s.outcome === 'correct') {
+        outcomeHtml = '<span style="color:var(--green);font-weight:700">CORRECT</span>';
+        pnlHtml = `<span style="color:var(--green);font-family:'JetBrains Mono',monospace">+$${(s.sim_pnl||0).toFixed(2)}</span>`;
+      } else if (s.outcome === 'wrong') {
+        outcomeHtml = '<span style="color:var(--red);font-weight:700">WRONG</span>';
+        pnlHtml = `<span style="color:var(--red);font-family:'JetBrains Mono',monospace">-$${Math.abs(s.sim_pnl||0).toFixed(2)}</span>`;
+      } else {
+        outcomeHtml = '<span style="color:var(--text-dim)">pending</span>';
+        pnlHtml = '<span style="color:var(--text-dim)">--</span>';
+      }
+
       return `<tr>
         <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${timeStr}</td>
         <td style="font-size:11px">${slugShort}</td>
         <td style="color:${dirColor};font-weight:700">${dir}</td>
+        <td>${outcomeHtml}</td>
+        <td>${pnlHtml}</td>
         <td style="color:${confColor};font-family:'JetBrains Mono',monospace;font-weight:600">${confPct}%</td>
         <td style="font-family:'JetBrains Mono',monospace">${(s.bias * 100).toFixed(0)}%</td>
         <td style="font-family:'JetBrains Mono',monospace">$${s.total_usdc.toFixed(0)}</td>
         <td>${s.trade_count}</td>
-        <td>${s.window_elapsed_s.toFixed(0)}s</td>
-        <td>${s.window_remaining_s.toFixed(0)}s</td>
         <td style="font-family:'JetBrains Mono',monospace">${s.avg_latency_ms > 0 ? s.avg_latency_ms.toFixed(0) + 'ms' : '--'}</td>
       </tr>`;
     }).join('');

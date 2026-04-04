@@ -518,10 +518,11 @@ def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
                             bet_placed_slug = slug
                     last_analyze_time = now
 
-            # Sweep all pending trades every 10s (PULSE + Follow)
+            # Sweep all pending trades every 10s (PULSE + Follow + Signal)
             if now - last_sweep_time >= 10:
                 resolve_all_pending(btc_feed)
                 resolve_follow_pending(btc_feed)
+                resolve_signal_pending(btc_feed)
                 last_sweep_time = now
 
             time.sleep(1)
@@ -772,6 +773,42 @@ async def api_formula():
 
 
 # --- Startup ---
+
+def resolve_signal_pending(btc_feed: BTCFeed):
+    """Sweep pending signals and resolve against actual market outcomes."""
+    if not _signal:
+        return
+
+    now = time.time()
+    pending_slugs = _signal.get_pending_slugs()
+
+    for slug in pending_slugs:
+        try:
+            parts = slug.split("-")
+            window_start_ts = int(parts[-1])
+            window_dur = 900 if "15m" in slug else 300
+            window_end_ts = window_start_ts + window_dur
+
+            # Wait at least 15s after window end
+            if now < window_end_ts + 15:
+                continue
+
+            # Primary: Polymarket outcome
+            market_winner = fetch_market_outcome(slug)
+            if market_winner:
+                _signal.resolve_signal(slug, market_winner)
+                continue
+
+            # Fallback: Binance price comparison (after 3 min buffer, BTC only)
+            if now > window_end_ts + 180 and "btc" in slug:
+                open_price = btc_feed.fetch_price_at_time(window_start_ts * 1000)
+                close_price = btc_feed.fetch_price_at_time(window_end_ts * 1000)
+                if open_price and close_price:
+                    winner = "down" if close_price < open_price else "up"
+                    _signal.resolve_signal(slug, winner)
+        except (ValueError, IndexError):
+            continue
+
 
 def _handle_signal(signal: dict):
     """Callback when Signal module emits a directional signal."""

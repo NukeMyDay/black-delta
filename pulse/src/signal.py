@@ -147,6 +147,7 @@ class SignalAggregator:
         bias_threshold:  Bias must exceed this to emit (0.5-1.0, default 0.65)
         min_elapsed_s:   Minimum seconds into window before signal fires
         only_5m:         Only process 5-minute markets (ignore 15m)
+        sim_stake:       Simulated stake per signal for P&L tracking
 
     Callback:
         on_signal(signal_dict) is called once per window when conditions are met.
@@ -161,16 +162,30 @@ class SignalAggregator:
         self.bias_threshold = config.get("bias_threshold", 0.65)
         self.min_elapsed_s = config.get("min_elapsed_s", 30)
         self.only_5m = config.get("only_5m", True)
+        self.sim_stake = config.get("sim_stake", 20.0)
 
         # Active windows: slug -> WindowAccumulator
         self._windows: dict[str, WindowAccumulator] = {}
 
         # Signal history (most recent first)
-        self.signals: deque[dict] = deque(maxlen=200)
+        self.signals: deque[dict] = deque(maxlen=500)
 
         # Stats
         self.total_trades_ingested = 0
         self.total_signals_emitted = 0
+
+        # Outcome tracking
+        self.total_resolved = 0
+        self.total_correct = 0
+        self.total_wrong = 0
+        self.sim_pnl = 0.0
+        self.sim_capital = 1000.0
+        self.sim_start_capital = 1000.0
+        self.pnl_curve: deque[dict] = deque(maxlen=2000)
+        self.pnl_curve.append({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "capital": 1000.0, "pnl": 0,
+        })
 
         # Callback
         self.on_signal: callable | None = None
@@ -281,6 +296,10 @@ class SignalAggregator:
             "window_elapsed_s": round(win.window_elapsed, 1),
             "window_remaining_s": round(win.window_remaining, 1),
             "avg_latency_ms": round(win.avg_latency_ms, 1),
+            "outcome": "pending",
+            "market_winner": None,
+            "sim_pnl": 0,
+            "sim_entry_price": 0,
             "emitted_at": time.time(),
             "time": datetime.now(timezone.utc).isoformat(),
         }
@@ -323,6 +342,9 @@ class SignalAggregator:
             avg_latency = (sum(all_latencies) / len(all_latencies)
                           if all_latencies else 0)
 
+            accuracy = (self.total_correct / self.total_resolved * 100
+                       if self.total_resolved > 0 else 0)
+
             return {
                 "config": {
                     "min_trades": self.min_trades,
@@ -330,15 +352,116 @@ class SignalAggregator:
                     "bias_threshold": self.bias_threshold,
                     "min_elapsed_s": self.min_elapsed_s,
                     "only_5m": self.only_5m,
+                    "sim_stake": self.sim_stake,
                 },
                 "stats": {
                     "total_trades_ingested": self.total_trades_ingested,
                     "total_signals_emitted": self.total_signals_emitted,
                     "active_windows": len(active_dicts),
                     "avg_latency_ms": round(avg_latency, 1),
+                    "total_resolved": self.total_resolved,
+                    "correct": self.total_correct,
+                    "wrong": self.total_wrong,
+                    "accuracy": round(accuracy, 1),
+                    "sim_pnl": round(self.sim_pnl, 2),
+                    "sim_capital": round(self.sim_capital, 2),
                 },
                 "windows": active_dicts,
                 "signals": list(self.signals),
+                "pnl_curve": list(self.pnl_curve),
+            }
+
+    # ------------------------------------------------------------------
+    #  Outcome Resolution
+    # ------------------------------------------------------------------
+    def resolve_signal(self, slug: str, market_winner: str):
+        """Resolve a signal's outcome after the market settles.
+
+        Args:
+            slug: Market slug
+            market_winner: "up" or "down" (actual market result)
+        """
+        with self._lock:
+            for sig in self.signals:
+                if sig.get("slug") == slug and sig.get("outcome") == "pending":
+                    correct = sig["direction"] == market_winner
+                    sig["outcome"] = "correct" if correct else "wrong"
+                    sig["market_winner"] = market_winner
+
+                    # Simulated P&L: bet on signal direction at market price
+                    # Approximate: buy at dominant-side avg price from the window
+                    entry_price = sig.get("bias", 0.65)
+                    if correct:
+                        # Won: payout is $1 per share, cost was entry_price
+                        payout_mult = 1.0 / entry_price if entry_price > 0 else 1.0
+                        pnl = self.sim_stake * (payout_mult - 1)
+                        self.total_correct += 1
+                    else:
+                        pnl = -self.sim_stake
+                        self.total_wrong += 1
+
+                    sig["sim_pnl"] = round(pnl, 2)
+                    sig["sim_entry_price"] = round(entry_price, 4)
+                    self.sim_pnl += pnl
+                    self.sim_capital += pnl
+                    self.total_resolved += 1
+
+                    self.pnl_curve.append({
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "capital": round(self.sim_capital, 2),
+                        "pnl": round(self.sim_pnl, 2),
+                    })
+                    break
+
+    def get_pending_slugs(self) -> list[str]:
+        """Return slugs of signals awaiting resolution."""
+        with self._lock:
+            return list(set(
+                sig["slug"] for sig in self.signals
+                if sig.get("outcome") == "pending"
+            ))
+
+    def get_accuracy_stats(self) -> dict:
+        """Return accuracy and simulated P&L statistics."""
+        with self._lock:
+            accuracy = (self.total_correct / self.total_resolved * 100
+                        if self.total_resolved > 0 else 0)
+
+            # Breakdown by confidence bucket
+            buckets = {"low": [0, 0], "mid": [0, 0], "high": [0, 0]}
+            for sig in self.signals:
+                if sig.get("outcome") not in ("correct", "wrong"):
+                    continue
+                conf = sig.get("confidence", 0)
+                if conf < 0.4:
+                    key = "low"
+                elif conf < 0.7:
+                    key = "mid"
+                else:
+                    key = "high"
+                buckets[key][0] += 1  # total
+                if sig["outcome"] == "correct":
+                    buckets[key][1] += 1  # correct
+
+            conf_breakdown = {}
+            for key, (total, correct) in buckets.items():
+                conf_breakdown[key] = {
+                    "total": total,
+                    "correct": correct,
+                    "accuracy": round(correct / total * 100, 1) if total > 0 else 0,
+                }
+
+            return {
+                "total_resolved": self.total_resolved,
+                "correct": self.total_correct,
+                "wrong": self.total_wrong,
+                "pending": sum(1 for s in self.signals if s.get("outcome") == "pending"),
+                "accuracy": round(accuracy, 1),
+                "sim_pnl": round(self.sim_pnl, 2),
+                "sim_capital": round(self.sim_capital, 2),
+                "sim_stake": self.sim_stake,
+                "confidence_breakdown": conf_breakdown,
+                "pnl_curve": list(self.pnl_curve),
             }
 
     def get_active_signal(self, slug: str) -> dict | None:
