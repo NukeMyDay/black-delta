@@ -650,33 +650,17 @@
     </div>
 
     <!-- Strategy Comparison Bar -->
-    <div id="strategy-compare" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:12px">
+    <div id="strategy-compare" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">
       <div style="background:var(--surface);border:1px solid var(--accent);border-radius:var(--radius);padding:10px 14px">
-        <div style="font-size:10px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Combined (PULSE + Signal)</div>
+        <div style="font-size:10px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Signal (Kelly)</div>
         <div style="display:flex;align-items:baseline;gap:8px">
-          <span id="compare-combined-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--accent)">--</span>
-          <span id="compare-combined-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
-        </div>
-        <div id="compare-combined-n" style="font-size:10px;color:var(--text-dim);margin-top:2px">0 bets</div>
-      </div>
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
-        <div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">PULSE Only</div>
-        <div style="display:flex;align-items:baseline;gap:8px">
-          <span id="compare-pulse-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--text)">--</span>
-          <span id="compare-pulse-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
-        </div>
-        <div id="compare-pulse-n" style="font-size:10px;color:var(--text-dim);margin-top:2px">0 bets</div>
-      </div>
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
-        <div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Signal Only</div>
-        <div style="display:flex;align-items:baseline;gap:8px">
-          <span id="compare-signal-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--text)">--</span>
+          <span id="compare-signal-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--accent)">--</span>
           <span id="compare-signal-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
         </div>
         <div id="compare-signal-n" style="font-size:10px;color:var(--text-dim);margin-top:2px">0 signals</div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
-        <div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Follow Only</div>
+        <div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Follow (1:1 Copy)</div>
         <div style="display:flex;align-items:baseline;gap:8px">
           <span id="compare-follow-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--text)">--</span>
           <span id="compare-follow-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
@@ -1056,8 +1040,6 @@ function initCharts() {
   pnlChart = new Chart(document.getElementById('pnl-chart').getContext('2d'), {
     type: 'line',
     data: { datasets: [
-      mkDataset('Combined', '#818cf8'),
-      mkDataset('PULSE', 'rgba(255,255,255,0.7)'),
       mkDataset('Signal', '#f7931a'),
       mkDataset('Follow', '#4ade80'),
     ]},
@@ -1192,20 +1174,7 @@ function updateKPIs(data) {
     }
   }
 
-  // Strategy comparison bar
-  const pulseN = stats.wins + stats.losses;
-  const pulseRoi = pulseN > 0 ? cap.pnl_pct : null;
-  document.getElementById('compare-pulse-wr').textContent = pulseN > 0 ? `${stats.win_rate}%` : '--';
-  renderRoi(document.getElementById('compare-pulse-pnl'), pulseRoi, pulseN > 0);
-  document.getElementById('compare-pulse-n').textContent = `${pulseN} resolved / ${stats.total_bets} bets`;
-
-  const comb = data.combined || {};
-  const combN = (comb.wins || 0) + (comb.losses || 0);
-  const combRoi = combN > 0 && cap.start > 0 ? (comb.pnl / cap.start * 100) : null;
-  document.getElementById('compare-combined-wr').textContent = combN > 0 ? `${comb.win_rate}%` : '--';
-  renderRoi(document.getElementById('compare-combined-pnl'), combRoi, combN > 0);
-  document.getElementById('compare-combined-n').textContent = `${combN} resolved / ${comb.bets || 0} bets`;
-
+  // Strategy comparison bar — Signal + Follow only
   // Signal stats from signal API
   if (lastSignalData && lastSignalData.stats) {
     const ss = lastSignalData.stats;
@@ -1363,20 +1332,6 @@ function updatePnlChart(data) {
     }));
   }
 
-  // PULSE: from data.pnl_curve [{time, capital}]
-  const pulseCurve = filterCurve(data.pnl_curve || []);
-  const pulsePoints = toRoiPoints(pulseCurve, data.capital.start);
-  // Append live point
-  const nowTs = Date.now();
-  const pulseRoi = data.capital.start > 0 ? (data.capital.current - data.capital.start) / data.capital.start * 100 : 0;
-  if (pulsePoints.length && pulsePoints[pulsePoints.length - 1].x < nowTs - 5000) {
-    pulsePoints.push({ x: nowTs, y: pulseRoi });
-  }
-
-  // Combined: from data.combined.pnl_curve [{time, capital}]
-  const combCurve = filterCurve((data.combined || {}).pnl_curve || []);
-  const combPoints = toRoiPoints(combCurve, data.capital.start);
-
   // Signal: from lastSignalData.pnl_curve [{time, capital}]
   let sigPoints = [];
   if (lastSignalData && lastSignalData.pnl_curve) {
@@ -1395,14 +1350,12 @@ function updatePnlChart(data) {
     followPoints = toRoiPoints(fCurve, fStart);
   }
 
-  // Update datasets: 0=Combined, 1=PULSE, 2=Signal, 3=Follow
-  pnlChart.data.datasets[0].data = combPoints;
-  pnlChart.data.datasets[1].data = pulsePoints;
-  pnlChart.data.datasets[2].data = sigPoints;
-  pnlChart.data.datasets[3].data = followPoints;
+  // Update datasets: 0=Signal, 1=Follow
+  pnlChart.data.datasets[0].data = sigPoints;
+  pnlChart.data.datasets[1].data = followPoints;
 
   // Auto-scale Y axis
-  const all = [...combPoints, ...pulsePoints, ...sigPoints, ...followPoints].map(p => p.y);
+  const all = [...sigPoints, ...followPoints].map(p => p.y);
   if (all.length) {
     const mn = Math.min(...all, 0), mx = Math.max(...all, 0);
     const pad = Math.max((mx - mn) * 0.25, 1);
@@ -1412,10 +1365,11 @@ function updatePnlChart(data) {
 
   pnlChart.update('none');
 
-  // Header value: best performing strategy ROI
+  // Header value: Signal ROI
+  const sigRoi = sigPoints.length ? sigPoints[sigPoints.length - 1].y : 0;
   const valEl = document.getElementById('pnl-chart-value');
-  valEl.textContent = `${pulseRoi >= 0 ? '+' : ''}${pulseRoi.toFixed(2)}% PULSE`;
-  valEl.style.color = pulseRoi >= 0 ? 'var(--green)' : 'var(--red)';
+  valEl.textContent = `${sigRoi >= 0 ? '+' : ''}${sigRoi.toFixed(2)}% Signal`;
+  valEl.style.color = sigRoi >= 0 ? 'var(--green)' : 'var(--red)';
 }
 
 // ============================================================
