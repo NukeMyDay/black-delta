@@ -603,6 +603,7 @@
   <div class="tab active" data-tab="live">Live Trading</div>
   <div class="tab" data-tab="history">History</div>
   <div class="tab" data-tab="follow">Follow</div>
+  <div class="tab" data-tab="signal">Signal</div>
   <div class="tab" data-tab="strategy">Strategy & Formula</div>
 </div>
 
@@ -856,6 +857,84 @@
        onclick="followShowMore()"
     ></button>
   </div>
+</div>
+
+<div id="tab-signal" class="content hidden">
+  <!-- Signal Status Bar -->
+  <div class="follow-status-bar" id="signal-status-bar">
+    <div class="follow-status-left">
+      <span class="follow-status-dot" id="signal-dot"></span>
+      <span id="signal-conn-label" style="color:var(--text-dim)">Waiting for data...</span>
+      <span style="color:var(--text-dim);margin-left:12px" id="signal-latency">-- ms</span>
+    </div>
+  </div>
+
+  <!-- Signal Stats -->
+  <div class="follow-stats" id="signal-stats">
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Signals</div>
+      <div class="follow-stat-value" id="signal-total">0</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Trades Ingested</div>
+      <div class="follow-stat-value" id="signal-ingested">0</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Active Windows</div>
+      <div class="follow-stat-value" id="signal-active-windows">0</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Bias Threshold</div>
+      <div class="follow-stat-value" id="signal-threshold">65%</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Min Trades</div>
+      <div class="follow-stat-value" id="signal-min-trades">8</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Avg Latency</div>
+      <div class="follow-stat-value" id="signal-avg-latency">--</div>
+    </div>
+  </div>
+
+  <!-- Signal Config Bar -->
+  <div style="display:flex;gap:12px;align-items:center;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:var(--spacing-md);flex-wrap:wrap">
+    <label style="color:var(--text-secondary);font-size:11px;font-weight:600">BIAS THRESHOLD</label>
+    <input type="range" id="signal-bias-slider" min="51" max="90" value="65" step="1"
+      style="width:100px;accent-color:var(--accent)" oninput="updateSignalThresholdLabel(this.value)">
+    <span id="signal-bias-label" style="font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--accent);min-width:36px">65%</span>
+    <label style="color:var(--text-secondary);font-size:11px;font-weight:600;margin-left:16px">MIN TRADES</label>
+    <input type="number" id="signal-min-trades-input" value="8" min="1" max="50" step="1"
+      style="width:60px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:'JetBrains Mono',monospace;font-size:12px">
+    <label style="color:var(--text-secondary);font-size:11px;font-weight:600;margin-left:16px">MIN USDC</label>
+    <input type="number" id="signal-min-usdc-input" value="50" min="0" max="500" step="10"
+      style="width:70px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:'JetBrains Mono',monospace;font-size:12px">
+    <button onclick="applySignalConfig()" style="padding:5px 14px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">Apply</button>
+  </div>
+
+  <!-- Active Windows -->
+  <div class="section-title">Active Windows <span id="signal-window-count" style="color:var(--text-dim);font-weight:400"></span></div>
+  <div id="signal-windows-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;margin-bottom:var(--spacing-lg)"></div>
+  <div id="signal-no-windows" style="padding:40px;text-align:center;color:var(--text-dim)">No active windows yet -- waiting for RTDS trades</div>
+
+  <!-- Signal History -->
+  <div class="section-title" style="margin-top:var(--spacing-lg)">Signal History</div>
+  <table class="trade-table" id="signal-history-table">
+    <thead><tr>
+      <th>Time</th>
+      <th>Market</th>
+      <th>Direction</th>
+      <th>Confidence</th>
+      <th>Bias</th>
+      <th>Volume</th>
+      <th>Trades</th>
+      <th>Elapsed</th>
+      <th>Remaining</th>
+      <th>Latency</th>
+    </tr></thead>
+    <tbody id="signal-history-body"></tbody>
+  </table>
+  <div id="signal-no-signals" style="padding:40px;text-align:center;color:var(--text-dim)">No signals emitted yet</div>
 </div>
 
 <div id="tab-strategy" class="content hidden">
@@ -1718,6 +1797,146 @@ document.getElementById('follow-addr-input').addEventListener('keydown', e => {
 });
 
 // ============================================================
+//  SIGNAL TAB
+// ============================================================
+let lastSignalData = null;
+
+async function pollSignal() {
+  try {
+    const data = await (await fetch('/api/signal')).json();
+    lastSignalData = data;
+    updateSignalTab(data);
+  } catch (e) { console.error('Signal poll:', e); }
+}
+
+function updateSignalTab(data) {
+  const stats = data.stats || {};
+  const config = data.config || {};
+  const windows = data.windows || [];
+  const signals = data.signals || [];
+
+  // Status bar
+  const dot = document.getElementById('signal-dot');
+  const connLabel = document.getElementById('signal-conn-label');
+  if (stats.total_trades_ingested > 0) {
+    dot.classList.add('connected');
+    connLabel.textContent = 'Receiving trades';
+    connLabel.style.color = 'var(--green)';
+  } else {
+    dot.classList.remove('connected');
+    connLabel.textContent = 'Waiting for data...';
+    connLabel.style.color = 'var(--text-dim)';
+  }
+  document.getElementById('signal-latency').textContent =
+    stats.avg_latency_ms > 0 ? `${stats.avg_latency_ms.toFixed(0)} ms avg latency` : '-- ms';
+
+  // Stats
+  document.getElementById('signal-total').textContent = stats.total_signals_emitted || 0;
+  document.getElementById('signal-ingested').textContent = stats.total_trades_ingested || 0;
+  document.getElementById('signal-active-windows').textContent = stats.active_windows || 0;
+  document.getElementById('signal-threshold').textContent = `${(config.bias_threshold * 100).toFixed(0)}%`;
+  document.getElementById('signal-min-trades').textContent = config.min_trades || 0;
+  document.getElementById('signal-avg-latency').textContent =
+    stats.avg_latency_ms > 0 ? `${stats.avg_latency_ms.toFixed(0)} ms` : '--';
+
+  // Active Windows Grid
+  const grid = document.getElementById('signal-windows-grid');
+  const noWin = document.getElementById('signal-no-windows');
+  if (windows.length === 0) {
+    grid.innerHTML = '';
+    noWin.style.display = 'block';
+  } else {
+    noWin.style.display = 'none';
+    grid.innerHTML = windows.map(w => {
+      const biasDir = w.bias >= 0.5 ? 'UP' : 'DOWN';
+      const biasPct = w.dominant_pct.toFixed(0);
+      const biasColor = biasPct >= 65 ? (biasDir === 'UP' ? 'var(--green)' : 'var(--red)') : 'var(--text-secondary)';
+      const barPct = Math.min(100, w.dominant_pct);
+      const elapsed = w.window_elapsed.toFixed(0);
+      const remaining = w.window_remaining.toFixed(0);
+      const isExpired = w.window_remaining <= 0;
+      const signalBadge = w.signal_emitted
+        ? `<span style="background:${w.signal_direction === 'up' ? 'rgba(74,222,128,0.15)' : 'rgba(248,113,113,0.15)'};color:${w.signal_direction === 'up' ? 'var(--green)' : 'var(--red)'};padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:0.5px">${w.signal_direction.toUpperCase()} SIGNAL</span>`
+        : '<span style="color:var(--text-dim);font-size:10px">accumulating...</span>';
+
+      const slugShort = w.slug.replace('btc-updown-', 'BTC ').replace('eth-updown-', 'ETH ');
+
+      return `<div style="background:var(--surface);border:1px solid ${w.signal_emitted ? 'var(--accent)' : 'var(--border)'};border-radius:var(--radius);padding:14px 16px;${isExpired ? 'opacity:0.5' : ''}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:var(--text)">${slugShort}</span>
+          ${signalBadge}
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span style="font-size:22px;font-weight:800;color:${biasColor};font-family:'JetBrains Mono',monospace">${biasDir} ${biasPct}%</span>
+        </div>
+        <div style="background:var(--surface-2);border-radius:4px;height:6px;overflow:hidden;margin-bottom:8px">
+          <div style="height:100%;width:${barPct}%;background:${biasColor};border-radius:4px;transition:width 0.3s"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:10px;color:var(--text-secondary)">
+          <div>Up <span style="color:var(--green);font-weight:600;font-family:'JetBrains Mono',monospace">$${w.up_usdc.toFixed(0)}</span></div>
+          <div>Down <span style="color:var(--red);font-weight:600;font-family:'JetBrains Mono',monospace">$${w.down_usdc.toFixed(0)}</span></div>
+          <div>Trades <span style="color:var(--text);font-weight:600;font-family:'JetBrains Mono',monospace">${w.trade_count}</span></div>
+          <div>${elapsed}s in</div>
+          <div>${remaining}s left</div>
+          <div>${w.avg_latency_ms > 0 ? w.avg_latency_ms.toFixed(0) + ' ms' : '--'}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  // Signal History Table
+  const tbody = document.getElementById('signal-history-body');
+  const noSig = document.getElementById('signal-no-signals');
+  if (signals.length === 0) {
+    tbody.innerHTML = '';
+    noSig.style.display = 'block';
+    document.getElementById('signal-history-table').style.display = 'none';
+  } else {
+    noSig.style.display = 'none';
+    document.getElementById('signal-history-table').style.display = '';
+    tbody.innerHTML = signals.slice(0, 50).map(s => {
+      const dir = s.direction.toUpperCase();
+      const dirColor = dir === 'UP' ? 'var(--green)' : 'var(--red)';
+      const confPct = (s.confidence * 100).toFixed(0);
+      const confColor = s.confidence >= 0.7 ? 'var(--green)' : s.confidence >= 0.4 ? 'var(--orange)' : 'var(--text-dim)';
+      const t = new Date(s.time);
+      const timeStr = t.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const slugShort = s.slug.replace('btc-updown-', 'BTC ').replace('eth-updown-', 'ETH ');
+      return `<tr>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${timeStr}</td>
+        <td style="font-size:11px">${slugShort}</td>
+        <td style="color:${dirColor};font-weight:700">${dir}</td>
+        <td style="color:${confColor};font-family:'JetBrains Mono',monospace;font-weight:600">${confPct}%</td>
+        <td style="font-family:'JetBrains Mono',monospace">${(s.bias * 100).toFixed(0)}%</td>
+        <td style="font-family:'JetBrains Mono',monospace">$${s.total_usdc.toFixed(0)}</td>
+        <td>${s.trade_count}</td>
+        <td>${s.window_elapsed_s.toFixed(0)}s</td>
+        <td>${s.window_remaining_s.toFixed(0)}s</td>
+        <td style="font-family:'JetBrains Mono',monospace">${s.avg_latency_ms > 0 ? s.avg_latency_ms.toFixed(0) + 'ms' : '--'}</td>
+      </tr>`;
+    }).join('');
+  }
+}
+
+function updateSignalThresholdLabel(val) {
+  document.getElementById('signal-bias-label').textContent = val + '%';
+}
+
+async function applySignalConfig() {
+  const bias = parseInt(document.getElementById('signal-bias-slider').value) / 100;
+  const minTrades = parseInt(document.getElementById('signal-min-trades-input').value);
+  const minUsdc = parseFloat(document.getElementById('signal-min-usdc-input').value);
+  try {
+    await fetch('/api/signal/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bias_threshold: bias, min_trades: minTrades, min_usdc: minUsdc }),
+    });
+    pollSignal();
+  } catch (e) { console.error('Signal config:', e); }
+}
+
+// ============================================================
 //  POLL
 // ============================================================
 async function poll() {
@@ -1734,6 +1953,10 @@ async function poll() {
   if (currentTab === 'follow' || !lastFollowData) {
     pollFollow();
   }
+  // Poll signal data when on signal tab (or every 3s regardless)
+  if (currentTab === 'signal' || !lastSignalData) {
+    pollSignal();
+  }
 }
 
 let followPollCounter = 0;
@@ -1746,6 +1969,7 @@ loadStrategy();
 poll();
 setInterval(poll, POLL_MS);
 setInterval(() => { if (currentTab !== 'follow') pollFollow(); }, 5000);
+setInterval(() => { if (currentTab !== 'signal') pollSignal(); }, 3000);
 
 document.getElementById('load-more-btn').addEventListener('click', () => {
   historyVisible += HISTORY_PAGE_SIZE;

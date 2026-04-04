@@ -37,6 +37,7 @@ from src.polymarket import (
 from src.formula import PulseFormula
 from src.btc_feed import BTCFeed
 from src.follow_feed import FollowFeed
+from src.signal import SignalAggregator
 from src.state import state
 from src.logger import log_trade
 
@@ -62,6 +63,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Module-level references for API access
 _btc_feed: BTCFeed | None = None
 _follow_feed: FollowFeed | None = None
+_signal: SignalAggregator | None = None
 
 # Runtime-mutable follow config (dashboard can toggle)
 _follow_config = {
@@ -650,6 +652,27 @@ async def api_follow_feed_status():
     return JSONResponse({"error": "follow feed not initialized"})
 
 
+# --- Signal Endpoints ---
+
+@app.get("/api/signal")
+async def api_signal():
+    """Signal module state: active windows, emitted signals, stats."""
+    if _signal:
+        return JSONResponse(_signal.get_snapshot())
+    return JSONResponse({"error": "signal module not initialized"})
+
+
+@app.patch("/api/signal/config")
+async def api_signal_config(request: Request):
+    """Update signal config at runtime."""
+    if not _signal:
+        return JSONResponse({"error": "signal module not initialized"}, status_code=500)
+    body = await request.json()
+    _signal.update_config(**body)
+    snap = _signal.get_snapshot()
+    return JSONResponse({"ok": True, "config": snap["config"]})
+
+
 @app.get("/api/formula")
 async def api_formula():
     return JSONResponse({
@@ -745,6 +768,23 @@ async def api_formula():
 
 # --- Startup ---
 
+def _handle_signal(signal: dict):
+    """Callback when Signal module emits a directional signal."""
+    direction = signal.get("direction", "?").upper()
+    confidence = signal.get("confidence", 0)
+    bias = signal.get("bias", 0)
+    slug = signal.get("slug", "")
+    elapsed = signal.get("window_elapsed_s", 0)
+    remaining = signal.get("window_remaining_s", 0)
+    latency = signal.get("avg_latency_ms", 0)
+    trades = signal.get("trade_count", 0)
+
+    print(f"[SIGNAL] {direction} on {slug} "
+          f"(conf={confidence:.2f}, bias={bias:.0%}, "
+          f"{trades} trades, {elapsed:.0f}s in, {remaining:.0f}s left, "
+          f"latency={latency:.0f}ms)")
+
+
 def _state_saver_loop(interval: int = 60):
     """Background thread: save follow state to disk every `interval` seconds."""
     while True:
@@ -760,7 +800,7 @@ def main():
     parser.add_argument("--port", type=int, default=3000)
     args = parser.parse_args()
 
-    global _btc_feed, _follow_feed
+    global _btc_feed, _follow_feed, _signal
     formula = PulseFormula(df=STUDENT_T_DF)
     btc_feed = BTCFeed(window_seconds=VOL_WINDOW)
     _btc_feed = btc_feed
@@ -776,10 +816,21 @@ def main():
     saver_thread = threading.Thread(target=_state_saver_loop, args=(60,), daemon=True)
     saver_thread.start()
 
+    # --- Signal Module ---
+    signal_agg = SignalAggregator()
+    _signal = signal_agg
+    signal_agg.on_signal = _handle_signal
+
     # --- Follow Mode ---
     follow_feed = FollowFeed()
     _follow_feed = follow_feed
-    follow_feed.on_trade = handle_follow_trade
+
+    # Dual callback: follow mode + signal aggregator
+    def _on_rtds_trade(trade):
+        handle_follow_trade(trade)
+        signal_agg.ingest(trade)
+
+    follow_feed.on_trade = _on_rtds_trade
 
     # Load persisted wallets from disk first
     follow_feed.load_wallets()
@@ -795,6 +846,7 @@ def main():
         follow_feed.start()
         print(f"  Follow mode: tracking {len(follow_feed.wallets)} wallet(s)")
         print(f"  Follow multiplier: {FOLLOW_MULTIPLIER}x (max ${FOLLOW_MAX_STAKE})")
+        print(f"  Signal module: active (bias threshold {signal_agg.bias_threshold})")
     else:
         print("  Follow mode: no wallets configured (add via dashboard)")
 
