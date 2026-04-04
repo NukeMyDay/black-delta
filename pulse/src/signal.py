@@ -25,8 +25,9 @@ from datetime import datetime, timezone
 
 # --- Quality & Bet Sizing ---
 QUALITY_BIAS_CUTOFF = 0.95       # bias >= this → low quality
-HIGH_QUALITY_WIN_RATE = 0.85     # conservative estimate for high-quality signals
+HIGH_QUALITY_WIN_RATE = 0.65     # empirical rate from 28 signals (bias < 95%)
 KELLY_SAFETY = 0.25              # Quarter-Kelly for small sample sizes
+MAX_ENTRY_PRICE = 0.75           # signals with avg entry price > this have negative EV
 SIM_START_CAPITAL = 1000.0       # Starting capital for simulation
 
 
@@ -339,8 +340,14 @@ class SignalAggregator:
         """Compute optimal bet size using Quarter-Kelly criterion.
 
         Returns (bet_pct, bet_usd) where bet_pct is % of current capital.
+        Skips signals that are low quality or have entry price too high
+        (negative EV at current estimated win rate).
         """
         if quality == "low":
+            return 0.0, 0.0
+
+        # Signals at high entry prices have negative EV
+        if avg_entry_price > MAX_ENTRY_PRICE:
             return 0.0, 0.0
 
         # Net payout odds: win $1/share at cost avg_entry_price
