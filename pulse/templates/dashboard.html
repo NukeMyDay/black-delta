@@ -650,30 +650,38 @@
     </div>
 
     <!-- Strategy Comparison Bar -->
-    <div id="strategy-compare" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px">
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
-        <div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">PULSE Only</div>
-        <div style="display:flex;align-items:baseline;gap:8px">
-          <span id="compare-pulse-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--text)">--</span>
-          <span id="compare-pulse-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">$0</span>
-        </div>
-        <div id="compare-pulse-n" style="font-size:10px;color:var(--text-dim);margin-top:2px">0 bets</div>
-      </div>
+    <div id="strategy-compare" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-top:12px">
       <div style="background:var(--surface);border:1px solid var(--accent);border-radius:var(--radius);padding:10px 14px">
         <div style="font-size:10px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Combined (PULSE + Signal)</div>
         <div style="display:flex;align-items:baseline;gap:8px">
           <span id="compare-combined-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--accent)">--</span>
-          <span id="compare-combined-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">$0</span>
+          <span id="compare-combined-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
         </div>
         <div id="compare-combined-n" style="font-size:10px;color:var(--text-dim);margin-top:2px">0 bets</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
+        <div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">PULSE Only</div>
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <span id="compare-pulse-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--text)">--</span>
+          <span id="compare-pulse-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
+        </div>
+        <div id="compare-pulse-n" style="font-size:10px;color:var(--text-dim);margin-top:2px">0 bets</div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
         <div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Signal Only</div>
         <div style="display:flex;align-items:baseline;gap:8px">
           <span id="compare-signal-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--text)">--</span>
-          <span id="compare-signal-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">$0</span>
+          <span id="compare-signal-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
         </div>
         <div id="compare-signal-n" style="font-size:10px;color:var(--text-dim);margin-top:2px">0 signals</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
+        <div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Follow Only</div>
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <span id="compare-follow-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--text)">--</span>
+          <span id="compare-follow-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
+        </div>
+        <div id="compare-follow-n" style="font-size:10px;color:var(--text-dim);margin-top:2px">0 bets</div>
       </div>
     </div>
   </div>
@@ -1141,42 +1149,48 @@ function updateKPIs(data) {
     badge.className = 'status-badge status-running';
   } else { badge.textContent = 'STOPPED'; badge.className = 'status-badge status-stopped'; }
 
+  // Helper: render a ROI% value into an element
+  function renderRoi(el, roiPct, hasData) {
+    if (!hasData || roiPct === null || roiPct === undefined) {
+      el.textContent = '--%';
+      el.style.color = 'var(--text-dim)';
+    } else {
+      el.textContent = `${roiPct >= 0 ? '+' : ''}${Number(roiPct).toFixed(2)}%`;
+      el.style.color = roiPct >= 0 ? 'var(--green)' : 'var(--red)';
+    }
+  }
+
   // Strategy comparison bar
   const pulseN = stats.wins + stats.losses;
-  const pulseWr = pulseN > 0 ? `${stats.win_rate}%` : '--';
-  const pulsePnl = cap.pnl;
-  document.getElementById('compare-pulse-wr').textContent = pulseWr;
-  const pulsePnlEl = document.getElementById('compare-pulse-pnl');
-  pulsePnlEl.textContent = `${pulsePnl >= 0 ? '+' : ''}$${pulsePnl.toFixed(2)}`;
-  pulsePnlEl.style.color = pulsePnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const pulseRoi = pulseN > 0 ? cap.pnl_pct : null;
+  document.getElementById('compare-pulse-wr').textContent = pulseN > 0 ? `${stats.win_rate}%` : '--';
+  renderRoi(document.getElementById('compare-pulse-pnl'), pulseRoi, pulseN > 0);
   document.getElementById('compare-pulse-n').textContent = `${pulseN} resolved / ${stats.total_bets} bets`;
 
   const comb = data.combined || {};
   const combN = (comb.wins || 0) + (comb.losses || 0);
-  const combWr = combN > 0 ? `${comb.win_rate}%` : '--';
-  const combPnl = comb.pnl || 0;
-  document.getElementById('compare-combined-wr').textContent = combWr;
-  const combPnlEl = document.getElementById('compare-combined-pnl');
-  combPnlEl.textContent = `${combPnl >= 0 ? '+' : ''}$${combPnl.toFixed(2)}`;
-  combPnlEl.style.color = combPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const combRoi = combN > 0 && cap.start > 0 ? (comb.pnl / cap.start * 100) : null;
+  document.getElementById('compare-combined-wr').textContent = combN > 0 ? `${comb.win_rate}%` : '--';
+  renderRoi(document.getElementById('compare-combined-pnl'), combRoi, combN > 0);
   document.getElementById('compare-combined-n').textContent = `${combN} resolved / ${comb.bets || 0} bets`;
 
-  // Signal stats come from the signal API (update if available)
+  // Signal stats from signal API
   if (lastSignalData && lastSignalData.stats) {
     const ss = lastSignalData.stats;
     const sigN = ss.total_resolved || 0;
-    const sigWr = sigN > 0 ? `${ss.accuracy}%` : '--';
-    const sigRoi = ss.roi_pct ?? null;
-    document.getElementById('compare-signal-wr').textContent = sigWr;
-    const sigPnlEl = document.getElementById('compare-signal-pnl');
-    if (sigRoi === null || sigN === 0) {
-      sigPnlEl.textContent = '--%';
-      sigPnlEl.style.color = 'var(--text-dim)';
-    } else {
-      sigPnlEl.textContent = `${sigRoi >= 0 ? '+' : ''}${sigRoi.toFixed(2)}% ROI`;
-      sigPnlEl.style.color = sigRoi >= 0 ? 'var(--green)' : 'var(--red)';
-    }
+    document.getElementById('compare-signal-wr').textContent = sigN > 0 ? `${ss.accuracy}%` : '--';
+    renderRoi(document.getElementById('compare-signal-pnl'), ss.roi_pct ?? null, sigN > 0);
     document.getElementById('compare-signal-n').textContent = `${sigN} resolved / ${ss.total_signals_emitted || 0} signals`;
+  }
+
+  // Follow stats (from separate follow poll)
+  if (lastFollowData) {
+    const followCap = lastFollowData.capital || {};
+    const followStats = lastFollowData.stats || {};
+    const followN = (followStats.wins || 0) + (followStats.losses || 0);
+    document.getElementById('compare-follow-wr').textContent = followN > 0 ? `${followStats.win_rate}%` : '--';
+    renderRoi(document.getElementById('compare-follow-pnl'), followN > 0 ? (followCap.pnl_pct ?? null) : null, followN > 0);
+    document.getElementById('compare-follow-n').textContent = `${followN} resolved / ${followStats.total_bets || 0} bets`;
   }
 }
 
