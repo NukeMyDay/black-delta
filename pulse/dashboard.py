@@ -867,6 +867,22 @@ def _handle_signal(signal: dict):
           f"{trades} trades, {elapsed:.0f}s in, {remaining:.0f}s left, "
           f"latency={latency:.0f}ms)")
 
+    # Post-hoc annotation: PULSE may have placed its bet before this signal fired.
+    # Retroactively annotate any pending PULSE trade on the same slug.
+    if slug:
+        sig_dir = signal.get("direction", "")
+        for trade in state.trades:
+            if (trade.get("event_slug") == slug
+                    and trade.get("bet_placed")
+                    and trade.get("signal_agrees") is None):
+                agrees = trade.get("direction", "") == sig_dir
+                trade["signal_agrees"] = agrees
+                trade["signal_direction"] = sig_dir
+                trade["signal_confidence"] = confidence
+                if agrees:
+                    state.combined_bets += 1
+                    print(f"[SIGNAL] Retroactively annotated PULSE bet on {slug} as COMBINED")
+
 
 def _state_saver_loop(interval: int = 60):
     """Background thread: save follow state to disk every `interval` seconds."""
@@ -891,6 +907,11 @@ def main():
     # Restore follow state from previous run before starting anything
     state.load_follow_state()
 
+    # --- Signal Module (init before bot thread to avoid race condition) ---
+    signal_agg = SignalAggregator()
+    _signal = signal_agg
+    signal_agg.on_signal = _handle_signal
+
     bot_thread = threading.Thread(target=bot_loop, args=(formula, btc_feed),
                                   daemon=True)
     bot_thread.start()
@@ -898,11 +919,6 @@ def main():
     # Periodic state persistence (every 60s)
     saver_thread = threading.Thread(target=_state_saver_loop, args=(60,), daemon=True)
     saver_thread.start()
-
-    # --- Signal Module ---
-    signal_agg = SignalAggregator()
-    _signal = signal_agg
-    signal_agg.on_signal = _handle_signal
 
     # --- Follow Mode ---
     follow_feed = FollowFeed()
