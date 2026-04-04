@@ -1629,7 +1629,10 @@ function updateFollowTab(data) {
     const truncAddr = a => a ? a.slice(0,6) + '...' + a.slice(-4) : '-';
     walletsBody.innerHTML = wallets.map(w => `<tr>
       <td style="font-weight:600;color:var(--text)">${w.label || '-'}</td>
-      <td style="font-family:'JetBrains Mono',monospace;font-size:11px" title="${w.address}">${truncAddr(w.address)}</td>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:11px">
+        <span title="${w.address}">${truncAddr(w.address)}</span>
+        <button onclick="copyAddr('${w.address}', this)" title="Copy address" style="background:none;border:none;cursor:pointer;color:var(--text-dim);padding:0 4px;font-size:11px;vertical-align:middle;line-height:1" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-dim)'">&#x2398;</button>
+      </td>
       <td style="font-family:'JetBrains Mono',monospace;font-size:11px" title="${w.proxy}">${truncAddr(w.proxy)}</td>
       <td style="font-weight:600">${w.buys || 0} <span style="color:var(--text-dim);font-weight:400;font-size:10px">BUY</span></td>
       <td style="color:var(--text-dim)">${w.sells || 0} <span style="font-size:10px">SELL</span></td>
@@ -1849,6 +1852,15 @@ async function addFollowWallet() {
   btn.textContent = 'Add';
 }
 
+function copyAddr(address, btn) {
+  navigator.clipboard.writeText(address).then(() => {
+    const prev = btn.innerHTML;
+    btn.innerHTML = '&#x2713;';
+    btn.style.color = 'var(--green)';
+    setTimeout(() => { btn.innerHTML = prev; btn.style.color = 'var(--text-dim)'; }, 1500);
+  });
+}
+
 async function removeFollowWallet(address) {
   if (!confirm('Remove this wallet?')) return;
   try {
@@ -1899,7 +1911,10 @@ function updateSignalTab(data) {
     wtBody.innerHTML = wallets.map(w => {
       const addrShort = w.address.slice(0, 6) + '...' + w.address.slice(-4);
       return `<tr>
-        <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${addrShort}</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:11px">
+          <span title="${w.address}">${addrShort}</span>
+          <button onclick="copyAddr('${w.address}', this)" title="Copy address" style="background:none;border:none;cursor:pointer;color:var(--text-dim);padding:0 4px;font-size:11px;vertical-align:middle;line-height:1" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-dim)'">&#x2398;</button>
+        </td>
         <td>${w.label || '<span style="color:var(--text-dim)">--</span>'}</td>
         <td style="font-family:'JetBrains Mono',monospace">${w.trades || 0}</td>
         <td style="text-align:right"><button onclick="removeSignalWallet('${w.address}')" style="background:none;border:1px solid var(--border);color:var(--red);cursor:pointer;padding:2px 8px;border-radius:4px;font-size:10px">Remove</button></td>
