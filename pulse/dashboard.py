@@ -56,6 +56,7 @@ FOLLOW_MULTIPLIER = float(os.getenv("FOLLOW_MULTIPLIER", "1.0"))  # 1.0 = same s
 FOLLOW_MAX_STAKE = float(os.getenv("FOLLOW_MAX_STAKE", "50"))     # safety cap per trade
 FOLLOW_AUTO_MODE = os.getenv("FOLLOW_AUTO_MODE", "true").lower() in ("1", "true", "yes")
 FOLLOW_AUTO_FRACTION = float(os.getenv("FOLLOW_AUTO_FRACTION", "0.001"))  # 0.1% of capital per bet
+FOLLOW_SCALE = float(os.getenv("FOLLOW_SCALE", "0.005"))  # 1/200: scale source bets from ~200k to 1k
 
 app = FastAPI(title="BLACK DELTA / PULSE")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -71,7 +72,8 @@ _follow_config = {
     "auto_fraction": FOLLOW_AUTO_FRACTION,
     "multiplier": FOLLOW_MULTIPLIER,
     "max_stake": FOLLOW_MAX_STAKE,
-    "simulation": True,  # True = simulation (1:1 copy), False = real (sized by auto/manual)
+    "simulation": True,  # True = simulation (scaled copy), False = real (sized by auto/manual)
+    "scale": FOLLOW_SCALE,
 }
 
 
@@ -400,7 +402,7 @@ def handle_follow_trade(trade_data: dict):
     source_cost = round(price * size, 2)
 
     if _follow_config["simulation"]:
-        stake = source_cost
+        stake = round(source_cost * _follow_config["scale"], 2)
     elif _follow_config["auto_mode"]:
         fraction = _follow_config["auto_fraction"]
         stake = round(state.follow_capital * fraction, 2)

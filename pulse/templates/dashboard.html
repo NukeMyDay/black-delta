@@ -1042,6 +1042,7 @@ function initCharts() {
     data: { datasets: [
       mkDataset('Signal', '#f7931a'),
       mkDataset('Follow', '#4ade80'),
+      { ...mkDataset('Baseline', 'rgba(255,255,255,0.25)', [6, 4]), borderWidth: 1, pointRadius: 0 },
     ]},
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
@@ -1350,14 +1351,35 @@ function updatePnlChart(data) {
     followPoints = toRoiPoints(fCurve, fStart);
   }
 
-  // Update datasets: 0=Signal, 1=Follow
+  // Update datasets: 0=Signal, 1=Follow, 2=Baseline
   pnlChart.data.datasets[0].data = sigPoints;
   pnlChart.data.datasets[1].data = followPoints;
+
+  // Baseline: dashed line at starting ROI% of visible window
+  const allPoints = [...sigPoints, ...followPoints];
+  let baselineY = 0;
+  if (allPoints.length) {
+    // Find earliest visible point across both curves to get the period start value
+    const firstSig = sigPoints.length ? sigPoints[0].y : null;
+    const firstFollow = followPoints.length ? followPoints[0].y : null;
+    if (firstSig !== null && firstFollow !== null) {
+      baselineY = (firstSig + firstFollow) / 2;
+    } else {
+      baselineY = firstSig ?? firstFollow ?? 0;
+    }
+  }
+  const xValues = allPoints.map(p => p.x);
+  if (xValues.length >= 2) {
+    const xMin = Math.min(...xValues), xMax = Math.max(...xValues);
+    pnlChart.data.datasets[2].data = [{ x: xMin, y: baselineY }, { x: xMax, y: baselineY }];
+  } else {
+    pnlChart.data.datasets[2].data = [];
+  }
 
   // Auto-scale Y axis
   const all = [...sigPoints, ...followPoints].map(p => p.y);
   if (all.length) {
-    const mn = Math.min(...all, 0), mx = Math.max(...all, 0);
+    const mn = Math.min(...all, baselineY), mx = Math.max(...all, baselineY);
     const pad = Math.max((mx - mn) * 0.25, 1);
     pnlChart.options.scales.y.min = mn - pad;
     pnlChart.options.scales.y.max = mx + pad;
