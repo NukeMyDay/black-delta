@@ -650,20 +650,15 @@
     </div>
 
     <!-- Strategy Comparison Bar -->
-    <div id="strategy-compare" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">
+    <div id="strategy-compare" style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:12px">
       <div style="background:var(--surface);border:1px solid var(--accent);border-radius:var(--radius);padding:10px 14px">
-        <div style="font-size:10px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Signal (Kelly)</div>
-        <div style="display:flex;align-items:baseline;gap:8px">
-          <span id="compare-signal-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--accent)">--</span>
-          <span id="compare-signal-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
-        </div>
-        <div id="compare-signal-n" style="font-size:10px;color:var(--text-dim);margin-top:2px">0 signals</div>
-      </div>
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px">
-        <div style="font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Follow (1:1 Copy)</div>
-        <div style="display:flex;align-items:baseline;gap:8px">
-          <span id="compare-follow-wr" style="font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--text)">--</span>
-          <span id="compare-follow-pnl" style="font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
+        <div style="font-size:10px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px">Follow (Bonereaper)</div>
+        <div style="display:flex;align-items:baseline;gap:12px">
+          <span id="compare-follow-wr" style="font-size:22px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--accent)">--</span>
+          <span style="font-size:10px;color:var(--text-dim)">WR</span>
+          <span id="compare-follow-pnl" style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--text-dim)">--%</span>
+          <span style="font-size:10px;color:var(--text-dim)">ROI</span>
+          <span id="follow-mode-badge" style="font-size:9px;padding:2px 6px;border-radius:3px;background:var(--surface);border:1px solid var(--text-dim);color:var(--text-dim);margin-left:auto">SIM</span>
         </div>
         <div id="compare-follow-n" style="font-size:10px;color:var(--text-dim);margin-top:2px">0 bets</div>
       </div>
@@ -1040,7 +1035,6 @@ function initCharts() {
   pnlChart = new Chart(document.getElementById('pnl-chart').getContext('2d'), {
     type: 'line',
     data: { datasets: [
-      mkDataset('Signal', '#f7931a'),
       mkDataset('Follow', '#4ade80'),
       { ...mkDataset('Baseline', 'rgba(255,255,255,0.25)', [6, 4]), borderWidth: 1, pointRadius: 0 },
     ]},
@@ -1175,17 +1169,7 @@ function updateKPIs(data) {
     }
   }
 
-  // Strategy comparison bar — Signal + Follow only
-  // Signal stats from signal API
-  if (lastSignalData && lastSignalData.stats) {
-    const ss = lastSignalData.stats;
-    const sigN = ss.total_resolved || 0;
-    document.getElementById('compare-signal-wr').textContent = sigN > 0 ? `${ss.accuracy}%` : '--';
-    renderRoi(document.getElementById('compare-signal-pnl'), ss.roi_pct ?? null, sigN > 0);
-    document.getElementById('compare-signal-n').textContent = `${sigN} resolved / ${ss.total_signals_emitted || 0} signals`;
-  }
-
-  // Follow stats (from separate follow poll)
+  // Strategy comparison bar — Follow only
   if (lastFollowData) {
     const followCap = lastFollowData.capital || {};
     const followStats = lastFollowData.stats || {};
@@ -1193,6 +1177,18 @@ function updateKPIs(data) {
     document.getElementById('compare-follow-wr').textContent = followN > 0 ? `${followStats.win_rate}%` : '--';
     renderRoi(document.getElementById('compare-follow-pnl'), followN > 0 ? (followCap.pnl_pct ?? null) : null, followN > 0);
     document.getElementById('compare-follow-n').textContent = `${followN} resolved / ${followStats.total_bets || 0} bets`;
+    // Mode badge: SIM vs LIVE
+    const badge = document.getElementById('follow-mode-badge');
+    const cfg = lastFollowData.config || {};
+    if (cfg.simulation === false) {
+      badge.textContent = 'LIVE';
+      badge.style.borderColor = 'var(--green)';
+      badge.style.color = 'var(--green)';
+    } else {
+      badge.textContent = 'SIM';
+      badge.style.borderColor = 'var(--text-dim)';
+      badge.style.color = 'var(--text-dim)';
+    }
   }
 }
 
@@ -1333,16 +1329,6 @@ function updatePnlChart(data) {
     }));
   }
 
-  // Signal: from lastSignalData.pnl_curve [{time, capital}]
-  let sigPoints = [];
-  if (lastSignalData && lastSignalData.pnl_curve) {
-    const sigCurve = filterCurve(lastSignalData.pnl_curve);
-    sigPoints = sigCurve.map(p => ({
-      x: new Date(p.time).getTime(),
-      y: p.capital != null ? (p.capital - 1000) / 1000 * 100 : (p.roi_pct || 0),
-    }));
-  }
-
   // Follow: from lastFollowData.pnl_curve [{time, capital}]
   let followPoints = [];
   if (lastFollowData && lastFollowData.pnl_curve) {
@@ -1351,33 +1337,21 @@ function updatePnlChart(data) {
     followPoints = toRoiPoints(fCurve, fStart);
   }
 
-  // Update datasets: 0=Signal, 1=Follow, 2=Baseline
-  pnlChart.data.datasets[0].data = sigPoints;
-  pnlChart.data.datasets[1].data = followPoints;
+  // Update datasets: 0=Follow, 1=Baseline
+  pnlChart.data.datasets[0].data = followPoints;
 
   // Baseline: dashed line at starting ROI% of visible window
-  const allPoints = [...sigPoints, ...followPoints];
-  let baselineY = 0;
-  if (allPoints.length) {
-    // Find earliest visible point across both curves to get the period start value
-    const firstSig = sigPoints.length ? sigPoints[0].y : null;
-    const firstFollow = followPoints.length ? followPoints[0].y : null;
-    if (firstSig !== null && firstFollow !== null) {
-      baselineY = (firstSig + firstFollow) / 2;
-    } else {
-      baselineY = firstSig ?? firstFollow ?? 0;
-    }
-  }
-  const xValues = allPoints.map(p => p.x);
+  let baselineY = followPoints.length ? followPoints[0].y : 0;
+  const xValues = followPoints.map(p => p.x);
   if (xValues.length >= 2) {
     const xMin = Math.min(...xValues), xMax = Math.max(...xValues);
-    pnlChart.data.datasets[2].data = [{ x: xMin, y: baselineY }, { x: xMax, y: baselineY }];
+    pnlChart.data.datasets[1].data = [{ x: xMin, y: baselineY }, { x: xMax, y: baselineY }];
   } else {
-    pnlChart.data.datasets[2].data = [];
+    pnlChart.data.datasets[1].data = [];
   }
 
   // Auto-scale Y axis
-  const all = [...sigPoints, ...followPoints].map(p => p.y);
+  const all = followPoints.map(p => p.y);
   if (all.length) {
     const mn = Math.min(...all, baselineY), mx = Math.max(...all, baselineY);
     const pad = Math.max((mx - mn) * 0.25, 1);
@@ -1387,11 +1361,11 @@ function updatePnlChart(data) {
 
   pnlChart.update('none');
 
-  // Header value: Signal ROI
-  const sigRoi = sigPoints.length ? sigPoints[sigPoints.length - 1].y : 0;
+  // Header value: Follow ROI
+  const followRoi = followPoints.length ? followPoints[followPoints.length - 1].y : 0;
   const valEl = document.getElementById('pnl-chart-value');
-  valEl.textContent = `${sigRoi >= 0 ? '+' : ''}${sigRoi.toFixed(2)}% Signal`;
-  valEl.style.color = sigRoi >= 0 ? 'var(--green)' : 'var(--red)';
+  valEl.textContent = `${followRoi >= 0 ? '+' : ''}${followRoi.toFixed(2)}% Follow`;
+  valEl.style.color = followRoi >= 0 ? 'var(--green)' : 'var(--red)';
 }
 
 // ============================================================

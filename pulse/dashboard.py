@@ -37,6 +37,7 @@ from src.polymarket import (
 from src.formula import PulseFormula
 from src.btc_feed import BTCFeed
 from src.follow_feed import FollowFeed
+from src.executor import Executor
 from src.signal import SignalAggregator
 from src.state import state
 from src.logger import log_trade
@@ -56,7 +57,7 @@ FOLLOW_MULTIPLIER = float(os.getenv("FOLLOW_MULTIPLIER", "1.0"))  # 1.0 = same s
 FOLLOW_MAX_STAKE = float(os.getenv("FOLLOW_MAX_STAKE", "50"))     # safety cap per trade
 FOLLOW_AUTO_MODE = os.getenv("FOLLOW_AUTO_MODE", "true").lower() in ("1", "true", "yes")
 FOLLOW_AUTO_FRACTION = float(os.getenv("FOLLOW_AUTO_FRACTION", "0.001"))  # 0.1% of capital per bet
-FOLLOW_SCALE = float(os.getenv("FOLLOW_SCALE", "0.005"))  # 1/200: scale source bets from ~200k to 1k
+FOLLOW_SCALE = float(os.getenv("FOLLOW_SCALE", "0.025"))  # 1/40: scale source bets from ~200k to 1k (5x)
 
 app = FastAPI(title="BLACK DELTA / PULSE")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -65,6 +66,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 _btc_feed: BTCFeed | None = None
 _follow_feed: FollowFeed | None = None
 _signal: SignalAggregator | None = None
+_executor: Executor | None = None
 
 # Runtime-mutable follow config (dashboard can toggle)
 _follow_config = {
@@ -400,19 +402,38 @@ def handle_follow_trade(trade_data: dict):
 
     # --- BUY: open a new position ---
     source_cost = round(price * size, 2)
+    is_live = not _follow_config["simulation"] and _executor and _executor.enabled
 
-    if _follow_config["simulation"]:
-        stake = round(source_cost * _follow_config["scale"], 2)
-    elif _follow_config["auto_mode"]:
-        fraction = _follow_config["auto_fraction"]
-        stake = round(state.follow_capital * fraction, 2)
-        stake = min(stake, _follow_config["max_stake"])
-    else:
-        stake = round(source_cost * _follow_config["multiplier"], 2)
-        stake = min(stake, _follow_config["max_stake"])
-
+    # Stake sizing: always scale from source
+    stake = round(source_cost * _follow_config["scale"], 2)
+    if is_live and _executor:
+        stake = _executor.cap_amount(stake)
     stake = max(stake, 0.01)
+
     payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
+    mode = "live" if is_live else "simulation"
+
+    # --- Live execution: place real order on Polymarket ---
+    order_resp = None
+    if is_live and _executor:
+        token_id = trade_data.get("asset", "")
+        if token_id and stake >= 0.50:
+            slippage = 0.03  # max 3 cents above entry
+            max_price = min(price + slippage, 0.95)
+            market_info = _executor.get_market_info(token_id)
+            order_resp = _executor.place_market_buy(
+                token_id=token_id,
+                amount_usd=stake,
+                max_price=max_price,
+                neg_risk=market_info.get("neg_risk", False),
+                tick_size=market_info.get("tick_size", "0.01"),
+            )
+            if not order_resp:
+                print(f"[FOLLOW] LIVE order failed — recording as sim fallback")
+                mode = "simulation"
+        else:
+            print(f"[FOLLOW] Skip live: token_id={bool(token_id)} stake=${stake:.2f}")
+            mode = "simulation"
 
     copy_trade = {
         "event_slug": event_slug,
@@ -431,13 +452,15 @@ def handle_follow_trade(trade_data: dict):
         "outcome": "pending",
         "pnl_usd": 0,
         "bet_placed": True,
-        "mode": "simulation",
+        "mode": mode,
+        "order_id": (order_resp or {}).get("orderID"),
         "time": datetime.now(timezone.utc).isoformat(),
         "detected_at": trade_data.get("detected_at", time.time()),
     }
 
     state.record_follow_trade(copy_trade)
-    print(f"[FOLLOW] BUY copied: {direction.upper()} @ ${price:.2f} "
+    emoji = "LIVE" if mode == "live" else "SIM"
+    print(f"[FOLLOW] [{emoji}] BUY {direction.upper()} @ ${price:.2f} "
           f"(source ${source_cost:.2f} -> our ${stake:.2f}) "
           f"from {copy_trade['source_name'] or 'unknown'}")
 
@@ -568,6 +591,8 @@ async def api_follow():
         **_follow_config,
         "current_auto_stake": round(state.follow_capital * _follow_config["auto_fraction"], 2),
     }
+    if _executor:
+        data["executor"] = _executor.get_status()
     return JSONResponse(data)
 
 
@@ -594,7 +619,13 @@ async def api_follow_update_config(request: Request):
     """Update follow config at runtime (auto_mode, fraction, multiplier, max)."""
     body = await request.json()
     if "simulation" in body:
-        _follow_config["simulation"] = bool(body["simulation"])
+        want_sim = bool(body["simulation"])
+        if not want_sim and (not _executor or not _executor.enabled):
+            return JSONResponse(
+                {"error": "Cannot enable live: executor not initialized (check POLY_* env vars)"},
+                status_code=400,
+            )
+        _follow_config["simulation"] = want_sim
     if "auto_mode" in body:
         _follow_config["auto_mode"] = bool(body["auto_mode"])
     if "auto_fraction" in body:
@@ -607,6 +638,20 @@ async def api_follow_update_config(request: Request):
         val = float(body["max_stake"])
         _follow_config["max_stake"] = max(1.0, val)
     return JSONResponse({"ok": True, "config": _follow_config})
+
+
+@app.post("/api/executor/kill-switch")
+async def api_executor_kill_switch(request: Request):
+    """Toggle the executor kill switch."""
+    if not _executor:
+        return JSONResponse({"error": "Executor not initialized"}, status_code=500)
+    body = await request.json()
+    if body.get("reset"):
+        _executor.reset_kill_switch()
+    else:
+        _executor.kill_switch = True
+        print("[EXEC] Kill switch activated via dashboard")
+    return JSONResponse({"ok": True, "kill_switch": _executor.kill_switch})
 
 
 @app.delete("/api/follow/wallets")
@@ -906,7 +951,7 @@ def main():
     parser.add_argument("--port", type=int, default=3000)
     args = parser.parse_args()
 
-    global _btc_feed, _follow_feed, _signal
+    global _btc_feed, _follow_feed, _signal, _executor
     formula = PulseFormula(df=STUDENT_T_DF)
     btc_feed = BTCFeed(window_seconds=VOL_WINDOW)
     _btc_feed = btc_feed
@@ -952,10 +997,21 @@ def main():
             if wallet:
                 follow_feed.add_wallet(wallet)
 
+    # --- Executor (real money trading) ---
+    executor = Executor()
+    _executor = executor
+    if executor.initialize():
+        _follow_config["simulation"] = False
+        print(f"  Executor: LIVE (max ${executor.max_bet_usd}/bet, "
+              f"daily loss limit ${executor.daily_loss_limit})")
+    else:
+        _follow_config["simulation"] = True
+        print("  Executor: SIMULATION (set POLY_* env vars for live)")
+
     if follow_feed.wallets:
         follow_feed.start()
         print(f"  Follow mode: tracking {len(follow_feed.wallets)} wallet(s)")
-        print(f"  Follow multiplier: {FOLLOW_MULTIPLIER}x (max ${FOLLOW_MAX_STAKE})")
+        print(f"  Follow scale: {FOLLOW_SCALE}x (1/{int(1/FOLLOW_SCALE)})")
         print(f"  Signal module: active (bias threshold {signal_agg.bias_threshold})")
     else:
         print("  Follow mode: no wallets configured (add via dashboard)")

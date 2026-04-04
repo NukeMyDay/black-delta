@@ -1,0 +1,261 @@
+"""
+Executor — Real money order execution via Polymarket CLOB API.
+
+Wraps py-clob-client for placing FOK market orders when copying
+Bonereaper trades. Includes safety guards: max bet per order,
+daily loss limit, and a kill switch.
+
+Usage:
+    executor = Executor()
+    if executor.initialize():
+        resp = executor.place_market_buy(token_id, amount, max_price)
+"""
+
+import os
+import threading
+import time
+from datetime import datetime, timezone
+
+from py_clob_client.client import ClobClient
+from py_clob_client.clob_types import ApiCreds, OrderType
+from py_clob_client.order_builder.constants import BUY
+
+
+class Executor:
+    """Manages real money order execution with safety guards."""
+
+    def __init__(self):
+        self.enabled = False
+        self.client: ClobClient | None = None
+        self._lock = threading.Lock()
+
+        # Safety guards (all env-configurable)
+        self.max_bet_usd = float(os.getenv("EXEC_MAX_BET", "50"))
+        self.daily_loss_limit = float(os.getenv("EXEC_DAILY_LOSS_LIMIT", "100"))
+        self.kill_switch = False
+
+        # Daily tracking
+        self._daily_loss = 0.0
+        self._daily_bets = 0
+        self._daily_volume = 0.0
+        self._daily_reset_date = ""
+
+        # Order history (last N for dashboard)
+        self._orders: list[dict] = []
+        self._max_history = 50
+
+        # Market info cache: {token_id: {tick_size, neg_risk}}
+        self._market_cache: dict[str, dict] = {}
+
+    def initialize(self) -> bool:
+        """Initialize the CLOB client from env vars. Returns True if ready."""
+        private_key = os.getenv("POLY_PRIVATE_KEY")
+        api_key = os.getenv("POLY_API_KEY")
+        api_secret = os.getenv("POLY_API_SECRET")
+        api_passphrase = os.getenv("POLY_API_PASSPHRASE")
+        funder = os.getenv("POLY_FUNDER_ADDRESS")
+
+        if not all([private_key, api_key, api_secret, api_passphrase]):
+            print("[EXEC] Missing POLY_* credentials in .env — executor disabled")
+            return False
+
+        try:
+            creds = ApiCreds(
+                api_key=api_key,
+                api_secret=api_secret,
+                api_passphrase=api_passphrase,
+            )
+            self.client = ClobClient(
+                host="https://clob.polymarket.com",
+                chain_id=137,
+                key=private_key,
+                creds=creds,
+                signature_type=2,  # GNOSIS_SAFE (default for new accounts)
+                funder=funder,
+            )
+            # Verify credentials with a lightweight call
+            self.client.get_api_keys()
+            self.enabled = True
+            print("[EXEC] Executor initialized — LIVE trading enabled")
+            return True
+        except Exception as e:
+            print(f"[EXEC] Initialization failed: {e}")
+            return False
+
+    # ------------------------------------------------------------------
+    #  Order Placement
+    # ------------------------------------------------------------------
+    def place_market_buy(
+        self,
+        token_id: str,
+        amount_usd: float,
+        max_price: float,
+        neg_risk: bool = False,
+        tick_size: str = "0.01",
+    ) -> dict | None:
+        """Place a FOK market buy order.
+
+        Args:
+            token_id:   The outcome token ID (from RTDS asset field)
+            amount_usd: Dollar amount to spend
+            max_price:  Maximum price / slippage cap
+            neg_risk:   Whether this is a neg-risk (multi-outcome) market
+            tick_size:  Market tick size
+
+        Returns:
+            Order response dict or None on failure
+        """
+        if not self._pre_check(amount_usd):
+            return None
+
+        with self._lock:
+            try:
+                order = self.client.create_market_order(
+                    token_id=token_id,
+                    side=BUY,
+                    amount=round(amount_usd, 2),
+                    price=max_price,
+                    options={"tick_size": tick_size, "neg_risk": neg_risk},
+                )
+                resp = self.client.post_order(order, OrderType.FOK)
+
+                order_record = {
+                    "token_id": token_id,
+                    "side": "BUY",
+                    "amount_usd": round(amount_usd, 2),
+                    "max_price": max_price,
+                    "response": resp,
+                    "success": bool(resp and resp.get("orderID")),
+                    "time": datetime.now(timezone.utc).isoformat(),
+                }
+
+                self._daily_bets += 1
+                self._daily_volume += amount_usd
+                self._orders.append(order_record)
+                if len(self._orders) > self._max_history:
+                    self._orders = self._orders[-self._max_history:]
+
+                status = "OK" if order_record["success"] else "FAILED"
+                print(
+                    f"[EXEC] BUY {status}: ${amount_usd:.2f} @ max ${max_price:.2f} "
+                    f"token={token_id[:16]}..."
+                )
+                return resp
+
+            except Exception as e:
+                print(f"[EXEC] Order error: {e}")
+                self._orders.append({
+                    "token_id": token_id,
+                    "side": "BUY",
+                    "amount_usd": round(amount_usd, 2),
+                    "max_price": max_price,
+                    "error": str(e),
+                    "success": False,
+                    "time": datetime.now(timezone.utc).isoformat(),
+                })
+                return None
+
+    # ------------------------------------------------------------------
+    #  Safety Guards
+    # ------------------------------------------------------------------
+    def _pre_check(self, amount_usd: float) -> bool:
+        """Run safety checks before placing an order."""
+        if self.kill_switch:
+            print("[EXEC] KILL SWITCH active — order blocked")
+            return False
+
+        if not self.enabled or not self.client:
+            print("[EXEC] Not initialized — order blocked")
+            return False
+
+        if amount_usd > self.max_bet_usd:
+            print(
+                f"[EXEC] ${amount_usd:.2f} exceeds max bet "
+                f"${self.max_bet_usd:.2f} — capping"
+            )
+            # We cap rather than block — caller should use capped value
+            return True
+
+        if amount_usd < 0.50:
+            print(f"[EXEC] ${amount_usd:.2f} below minimum $0.50 — blocked")
+            return False
+
+        # Reset daily counters on new day
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today != self._daily_reset_date:
+            self._daily_loss = 0.0
+            self._daily_bets = 0
+            self._daily_volume = 0.0
+            self._daily_reset_date = today
+
+        if self._daily_loss >= self.daily_loss_limit:
+            print(
+                f"[EXEC] Daily loss limit ${self.daily_loss_limit:.2f} "
+                f"reached — activating kill switch"
+            )
+            self.kill_switch = True
+            return False
+
+        return True
+
+    def cap_amount(self, amount_usd: float) -> float:
+        """Cap an amount to the max bet size."""
+        return min(amount_usd, self.max_bet_usd)
+
+    def record_loss(self, amount: float):
+        """Track a realized loss against the daily limit."""
+        self._daily_loss += abs(amount)
+        if self._daily_loss >= self.daily_loss_limit:
+            print(
+                f"[EXEC] Daily loss limit reached "
+                f"(${self._daily_loss:.2f}/{self.daily_loss_limit:.2f}) "
+                f"— activating kill switch"
+            )
+            self.kill_switch = True
+
+    def reset_kill_switch(self):
+        """Manual reset of kill switch (from dashboard)."""
+        self.kill_switch = False
+        print("[EXEC] Kill switch reset")
+
+    # ------------------------------------------------------------------
+    #  Market Info
+    # ------------------------------------------------------------------
+    def get_market_info(self, token_id: str) -> dict:
+        """Get tick_size and neg_risk for a token, with caching."""
+        if token_id in self._market_cache:
+            return self._market_cache[token_id]
+
+        info = {"tick_size": "0.01", "neg_risk": False}
+
+        if self.client:
+            try:
+                neg_risk = self.client.get_neg_risk(token_id)
+                info["neg_risk"] = bool(neg_risk)
+            except Exception:
+                pass
+            try:
+                tick = self.client.get_tick_size(token_id)
+                if tick:
+                    info["tick_size"] = str(tick)
+            except Exception:
+                pass
+
+        self._market_cache[token_id] = info
+        return info
+
+    # ------------------------------------------------------------------
+    #  Status / Dashboard
+    # ------------------------------------------------------------------
+    def get_status(self) -> dict:
+        """Return executor status for the dashboard API."""
+        return {
+            "enabled": self.enabled,
+            "kill_switch": self.kill_switch,
+            "max_bet_usd": self.max_bet_usd,
+            "daily_loss_limit": self.daily_loss_limit,
+            "daily_loss": round(self._daily_loss, 2),
+            "daily_bets": self._daily_bets,
+            "daily_volume": round(self._daily_volume, 2),
+            "recent_orders": self._orders[-10:],
+        }
