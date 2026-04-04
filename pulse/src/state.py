@@ -46,6 +46,19 @@ class PulseState:
             "pnl": 0,
         })
 
+        # --- Combined Mode (PULSE + Signal agreement tracking) ---
+        self.combined_bets = 0
+        self.combined_wins = 0
+        self.combined_losses = 0
+        self.combined_pnl = 0.0
+        self.combined_capital = start_capital
+        self.combined_pnl_curve: deque[dict] = deque(maxlen=2000)
+        self.combined_pnl_curve.append({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "capital": start_capital,
+            "pnl": 0,
+        })
+
         # Bot status
         self.bot_running = False
         self.last_update: str | None = None
@@ -119,6 +132,22 @@ class PulseState:
                             "capital": round(self.capital, 2),
                             "pnl": round(self.total_pnl, 2),
                         })
+
+                        # Combined: only count if signal agreed
+                        if trade.get("signal_agrees"):
+                            if outcome == "win":
+                                self.combined_wins += 1
+                                self.combined_pnl += pnl
+                                self.combined_capital += pnl
+                            else:
+                                self.combined_losses += 1
+                                self.combined_pnl += pnl
+                                self.combined_capital += pnl
+                            self.combined_pnl_curve.append({
+                                "time": datetime.now(timezone.utc).isoformat(),
+                                "capital": round(self.combined_capital, 2),
+                                "pnl": round(self.combined_pnl, 2),
+                            })
                     break
 
     # ------------------------------------------------------------------
@@ -375,6 +404,10 @@ class PulseState:
             win_rate = (self.total_wins / self.total_bets * 100
                         if self.total_bets > 0 else 0)
 
+            combined_resolved = self.combined_wins + self.combined_losses
+            combined_wr = (self.combined_wins / combined_resolved * 100
+                          if combined_resolved > 0 else 0)
+
             return {
                 "mode": self.mode,
                 "bot_running": self.bot_running,
@@ -394,6 +427,15 @@ class PulseState:
                     "pending": sum(1 for t in self.trades
                                    if t.get("outcome") == "pending"
                                    and t.get("bet_placed")),
+                },
+                "combined": {
+                    "bets": self.combined_bets,
+                    "wins": self.combined_wins,
+                    "losses": self.combined_losses,
+                    "win_rate": round(combined_wr, 1),
+                    "pnl": round(self.combined_pnl, 2),
+                    "capital": round(self.combined_capital, 2),
+                    "pnl_curve": list(self.combined_pnl_curve),
                 },
                 "current": {
                     "slug": self.current_slug,

@@ -499,6 +499,7 @@ def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
                 if result is not None:
                     _analysis, trade = result
                     if trade and bet_placed_slug != slug:
+                        _annotate_signal_agreement(trade)
                         state.record_trade(trade)
                         log_trade(trade)
                         bet_placed_slug = slug
@@ -513,6 +514,7 @@ def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
                     if result is not None:
                         _analysis, trade = result
                         if trade and bet_placed_slug != slug:
+                            _annotate_signal_agreement(trade)
                             state.record_trade(trade)
                             log_trade(trade)
                             bet_placed_slug = slug
@@ -773,6 +775,45 @@ async def api_formula():
 
 
 # --- Startup ---
+
+def _annotate_signal_agreement(trade: dict):
+    """Check if the Signal module agrees with this PULSE trade direction.
+
+    Annotates trade with:
+      signal_agrees: True/False/None (None = no signal available)
+      signal_direction: the signal's direction (if available)
+      signal_confidence: the signal's confidence (if available)
+    """
+    if not _signal:
+        trade["signal_agrees"] = None
+        return
+
+    slug = trade.get("event_slug", "")
+    sig = _signal.get_active_signal(slug)
+
+    if not sig:
+        trade["signal_agrees"] = None
+        trade["signal_direction"] = None
+        trade["signal_confidence"] = None
+        return
+
+    pulse_dir = trade.get("direction", "")
+    signal_dir = sig.get("direction", "")
+    agrees = pulse_dir == signal_dir
+
+    trade["signal_agrees"] = agrees
+    trade["signal_direction"] = signal_dir
+    trade["signal_confidence"] = sig.get("confidence", 0)
+
+    if agrees:
+        state.combined_bets += 1
+        tag = "COMBINED"
+    else:
+        tag = "DIVERGENT"
+
+    print(f"[{tag}] PULSE={pulse_dir.upper()} Signal={signal_dir.upper()} "
+          f"conf={sig.get('confidence', 0):.2f} on {slug}")
+
 
 def resolve_signal_pending(btc_feed: BTCFeed):
     """Sweep pending signals and resolve against actual market outcomes."""
