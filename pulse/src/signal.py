@@ -10,12 +10,24 @@ Flow:
 
 Designed for wallets like Bonereaper that trade BOTH sides simultaneously
 and build directional positions over time within each 5-min window.
+
+Signal quality tiers (based on empirical data):
+  bias < 95%  = "high" quality (~90% accuracy) — both-sides trading
+  bias >= 95% = "low" quality (~50% accuracy)  — one-sided, often noise
+
+Bet sizing uses Quarter-Kelly based on estimated win rate per tier.
 """
 
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
+
+# --- Quality & Bet Sizing ---
+QUALITY_BIAS_CUTOFF = 0.95       # bias >= this → low quality
+HIGH_QUALITY_WIN_RATE = 0.85     # conservative estimate for high-quality signals
+KELLY_SAFETY = 0.25              # Quarter-Kelly for small sample sizes
+SIM_START_CAPITAL = 1000.0       # Starting capital for simulation
 
 
 class WindowAccumulator:
@@ -147,7 +159,6 @@ class SignalAggregator:
         bias_threshold:  Bias must exceed this to emit (0.5-1.0, default 0.65)
         min_elapsed_s:   Minimum seconds into window before signal fires
         only_5m:         Only process 5-minute markets (ignore 15m)
-        sim_stake:       Simulated stake per signal for P&L tracking
 
     Callback:
         on_signal(signal_dict) is called once per window when conditions are met.
@@ -178,11 +189,12 @@ class SignalAggregator:
         self.total_correct = 0
         self.total_wrong = 0
         self.sim_pnl = 0.0
-        self.sim_total_invested = 0.0  # cumulative USDC deployed (1:1 with Bonereaper)
+        self.sim_capital = SIM_START_CAPITAL
+        self.sim_total_invested = 0.0
         self.pnl_curve: deque[dict] = deque(maxlen=2000)
         self.pnl_curve.append({
             "time": datetime.now(timezone.utc).isoformat(),
-            "roi_pct": 0.0, "pnl": 0.0, "invested": 0.0,
+            "capital": SIM_START_CAPITAL, "pnl": 0.0,
         })
 
         # Callback
@@ -285,19 +297,29 @@ class SignalAggregator:
                                if win.down_shares > 0 else 0.5)
         avg_entry_price = max(0.01, min(0.99, avg_entry_price))
 
+        # Quality tier: both-sides trading (bias < 95%) is far more predictive
+        quality = "low" if bias >= QUALITY_BIAS_CUTOFF else "high"
+
         # Confidence: composite score from bias strength, trade count, and volume
         bias_score = (bias - 0.5) / 0.5  # 0.0 at 50%, 1.0 at 100%
         count_score = min(1.0, win.trade_count / 30)  # saturates at 30 trades
         volume_score = min(1.0, win.total_usdc / 300)  # saturates at $300
         confidence = round(bias_score * 0.5 + count_score * 0.25 + volume_score * 0.25, 3)
 
+        # Optimal bet sizing (Quarter-Kelly) based on quality tier
+        suggested_bet_pct, suggested_bet_usd = self._compute_bet_sizing(
+            quality, avg_entry_price)
+
         return {
             "slug": win.slug,
             "event_slug": win.slug,  # compatible with PULSE
             "direction": direction,
+            "quality": quality,
             "confidence": confidence,
             "bias": round(bias, 4),
             "avg_entry_price": round(avg_entry_price, 4),
+            "suggested_bet_pct": suggested_bet_pct,
+            "suggested_bet_usd": suggested_bet_usd,
             "up_usdc": round(win.up_usdc, 2),
             "down_usdc": round(win.down_usdc, 2),
             "total_usdc": round(win.total_usdc, 2),
@@ -312,6 +334,27 @@ class SignalAggregator:
             "emitted_at": time.time(),
             "time": datetime.now(timezone.utc).isoformat(),
         }
+
+    def _compute_bet_sizing(self, quality: str, avg_entry_price: float):
+        """Compute optimal bet size using Quarter-Kelly criterion.
+
+        Returns (bet_pct, bet_usd) where bet_pct is % of current capital.
+        """
+        if quality == "low":
+            return 0.0, 0.0
+
+        # Net payout odds: win $1/share at cost avg_entry_price
+        b = (1.0 / avg_entry_price - 1) if avg_entry_price > 0.01 else 0
+        if b <= 0:
+            return 0.0, 0.0
+
+        p = HIGH_QUALITY_WIN_RATE
+        q = 1 - p
+        kelly = max(0, (p * b - q) / b)
+        fraction = kelly * KELLY_SAFETY
+
+        bet_usd = round(self.sim_capital * fraction, 2)
+        return round(fraction * 100, 2), bet_usd
 
     def _cleanup(self):
         """Remove windows older than 10 minutes past their end."""
@@ -354,6 +397,23 @@ class SignalAggregator:
             accuracy = (self.total_correct / self.total_resolved * 100
                        if self.total_resolved > 0 else 0)
 
+            # Quality breakdown
+            high_total = sum(1 for s in self.signals
+                             if s.get("outcome") in ("correct", "wrong")
+                             and s.get("quality") == "high")
+            high_correct = sum(1 for s in self.signals
+                               if s.get("outcome") == "correct"
+                               and s.get("quality") == "high")
+            low_total = sum(1 for s in self.signals
+                            if s.get("outcome") in ("correct", "wrong")
+                            and s.get("quality") == "low")
+            low_correct = sum(1 for s in self.signals
+                              if s.get("outcome") == "correct"
+                              and s.get("quality") == "low")
+
+            roi_pct = ((self.sim_capital - SIM_START_CAPITAL) /
+                       SIM_START_CAPITAL * 100)
+
             return {
                 "config": {
                     "min_trades": self.min_trades,
@@ -372,9 +432,12 @@ class SignalAggregator:
                     "wrong": self.total_wrong,
                     "accuracy": round(accuracy, 1),
                     "sim_pnl": round(self.sim_pnl, 2),
-                    "sim_total_invested": round(self.sim_total_invested, 2),
-                    "roi_pct": round(self.sim_pnl / self.sim_total_invested * 100, 2)
-                              if self.sim_total_invested > 0 else 0,
+                    "sim_capital": round(self.sim_capital, 2),
+                    "roi_pct": round(roi_pct, 2),
+                    "quality_high": {"total": high_total, "correct": high_correct,
+                                     "accuracy": round(high_correct / high_total * 100, 1) if high_total > 0 else 0},
+                    "quality_low": {"total": low_total, "correct": low_correct,
+                                    "accuracy": round(low_correct / low_total * 100, 1) if low_total > 0 else 0},
                 },
                 "windows": active_dicts,
                 "signals": list(self.signals),
@@ -398,30 +461,33 @@ class SignalAggregator:
                     sig["outcome"] = "correct" if correct else "wrong"
                     sig["market_winner"] = market_winner
 
-                    # Simulated P&L: 1:1 with Bonereaper's actual window volume
-                    stake = sig["total_usdc"]  # what he actually deployed
                     entry_price = sig.get("avg_entry_price") or sig.get("bias", 0.65)
+                    # Use Kelly-sized stake for sim P&L (0 for low quality)
+                    stake = sig.get("suggested_bet_usd", 0)
+
                     if correct:
-                        payout_mult = 1.0 / entry_price if entry_price > 0 else 1.0
-                        pnl = stake * (payout_mult - 1)
                         self.total_correct += 1
                     else:
-                        pnl = -stake
                         self.total_wrong += 1
-
-                    sig["sim_pnl"] = round(pnl, 2)
-                    sig["sim_entry_price"] = round(entry_price, 4)
-                    self.sim_pnl += pnl
-                    self.sim_total_invested += stake
                     self.total_resolved += 1
 
-                    roi_pct = (self.sim_pnl / self.sim_total_invested * 100
-                               if self.sim_total_invested > 0 else 0)
+                    if stake > 0:
+                        payout_mult = 1.0 / entry_price if entry_price > 0 else 1.0
+                        pnl = stake * (payout_mult - 1) if correct else -stake
+                        sig["sim_pnl"] = round(pnl, 2)
+                        self.sim_pnl += pnl
+                        self.sim_capital += pnl
+                        self.sim_total_invested += stake
+                    else:
+                        pnl = 0
+                        sig["sim_pnl"] = 0
+
+                    sig["sim_entry_price"] = round(entry_price, 4)
+
                     self.pnl_curve.append({
                         "time": datetime.now(timezone.utc).isoformat(),
-                        "roi_pct": round(roi_pct, 2),
+                        "capital": round(self.sim_capital, 2),
                         "pnl": round(self.sim_pnl, 2),
-                        "invested": round(self.sim_total_invested, 2),
                     })
                     break
 
@@ -463,8 +529,8 @@ class SignalAggregator:
                     "accuracy": round(correct / total * 100, 1) if total > 0 else 0,
                 }
 
-            roi_pct = (self.sim_pnl / self.sim_total_invested * 100
-                       if self.sim_total_invested > 0 else 0)
+            roi_pct = ((self.sim_capital - SIM_START_CAPITAL) /
+                       SIM_START_CAPITAL * 100)
             return {
                 "total_resolved": self.total_resolved,
                 "correct": self.total_correct,
@@ -472,7 +538,7 @@ class SignalAggregator:
                 "pending": sum(1 for s in self.signals if s.get("outcome") == "pending"),
                 "accuracy": round(accuracy, 1),
                 "sim_pnl": round(self.sim_pnl, 2),
-                "sim_total_invested": round(self.sim_total_invested, 2),
+                "sim_capital": round(self.sim_capital, 2),
                 "roi_pct": round(roi_pct, 2),
                 "confidence_breakdown": conf_breakdown,
                 "pnl_curve": list(self.pnl_curve),

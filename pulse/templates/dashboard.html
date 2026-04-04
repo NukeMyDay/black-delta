@@ -600,7 +600,7 @@
 </header>
 
 <div class="tabs">
-  <div class="tab active" data-tab="live">Live Trading</div>
+  <div class="tab active" data-tab="live">Live Betting</div>
   <div class="tab" data-tab="history">History</div>
   <div class="tab" data-tab="follow">Follow</div>
   <div class="tab" data-tab="signal">Signal</div>
@@ -611,8 +611,8 @@
   <div class="charts-row">
     <div class="chart-section">
       <div class="chart-header">
-        <h3>Capital Performance</h3>
-        <span id="pnl-chart-value" class="chart-value" style="color:var(--accent)">EUR 1,000</span>
+        <h3>Strategy Performance</h3>
+        <span id="pnl-chart-value" class="chart-value" style="color:var(--accent)">0.00%</span>
         <div class="chart-filters" id="chart-filters">
           <button class="chart-filter-btn" data-range="today">Today</button>
           <button class="chart-filter-btn" data-range="week">This Week</button>
@@ -942,6 +942,14 @@
       <div class="follow-stat-label">Avg Latency</div>
       <div class="follow-stat-value" id="signal-avg-latency">--</div>
     </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">High Quality</div>
+      <div class="follow-stat-value" id="signal-quality-high" style="color:var(--green)">--</div>
+    </div>
+    <div class="follow-stat-card">
+      <div class="follow-stat-label">Low Quality</div>
+      <div class="follow-stat-value" id="signal-quality-low" style="color:var(--red)">--</div>
+    </div>
   </div>
 
   <!-- Signal Config Bar -->
@@ -971,13 +979,13 @@
       <th>Time</th>
       <th>Market</th>
       <th>Direction</th>
+      <th>Quality</th>
       <th>Outcome</th>
       <th>Sim P&L</th>
-      <th>Confidence</th>
+      <th>Bet Size</th>
       <th>Bias</th>
       <th>Volume</th>
       <th>Trades</th>
-      <th>Latency</th>
     </tr></thead>
     <tbody id="signal-history-body"></tbody>
   </table>
@@ -1023,39 +1031,53 @@ const gColor = 'rgba(30,30,40,0.6)';
 const tColor = '#606075';
 
 function initCharts() {
+  const mkDataset = (label, color, dash) => ({
+    label,
+    data: [],
+    borderColor: color,
+    borderWidth: 1.5,
+    tension: 0.3,
+    pointRadius: 0,
+    fill: false,
+    borderDash: dash || [],
+    spanGaps: true,
+  });
+
   pnlChart = new Chart(document.getElementById('pnl-chart').getContext('2d'), {
     type: 'line',
-    data: { labels: [], datasets: [
-      {
-        data: [], borderColor: 'rgba(255,255,255,0.6)',
-        backgroundColor: ctx => {
-          const { ctx: c, chartArea } = ctx.chart;
-          if (!chartArea) return 'transparent';
-          const g = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-          g.addColorStop(0, 'rgba(255,255,255,0.06)'); g.addColorStop(1, 'rgba(255,255,255,0)');
-          return g;
-        },
-        fill: true, tension: 0.4, pointRadius: 0, borderWidth: 1.2,
-      },
-      {
-        label: 'Trend',
-        data: [], borderColor: 'rgba(74,222,128,0.7)',
-        borderWidth: 2, tension: 0.5, pointRadius: 0,
-        fill: false, borderDash: [],
-      },
-      {
-        label: 'Start',
-        data: [], borderColor: 'rgba(255,255,255,0.15)',
-        borderWidth: 1, pointRadius: 0,
-        fill: false, borderDash: [6, 4],
-      }
+    data: { datasets: [
+      mkDataset('Combined', '#818cf8'),
+      mkDataset('PULSE', 'rgba(255,255,255,0.7)'),
+      mkDataset('Signal', '#f7931a'),
+      mkDataset('Follow', '#4ade80'),
     ]},
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
-      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      plugins: {
+        legend: {
+          display: true, position: 'top', align: 'end',
+          labels: {
+            color: 'rgba(255,255,255,0.6)', boxWidth: 12, boxHeight: 2,
+            padding: 12, font: { family: "'Inter',sans-serif", size: 10 },
+            usePointStyle: false,
+          }
+        },
+        tooltip: { enabled: false },
+      },
       scales: {
-        x: { ticks: { color: tColor, maxTicksLimit: 5, font: cFont }, grid: { display: false }, border: { display: false } },
-        y: { position: 'right', ticks: { color: tColor, font: cFont, callback: v => 'EUR ' + v.toFixed(0), maxTicksLimit: 4 }, grid: { color: gColor, lineWidth: 0.5 }, border: { display: false } }
+        x: {
+          type: 'linear',
+          ticks: {
+            color: tColor, maxTicksLimit: 6, font: cFont,
+            callback: v => new Date(v).toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' }),
+          },
+          grid: { display: false }, border: { display: false },
+        },
+        y: {
+          position: 'right',
+          ticks: { color: tColor, font: cFont, callback: v => v.toFixed(1) + '%', maxTicksLimit: 5 },
+          grid: { color: gColor, lineWidth: 0.5 }, border: { display: false },
+        }
       }
     }
   });
@@ -1319,42 +1341,71 @@ function calcEMA(data, period) {
 function updatePnlChart(data) {
   if (!pnlChart) return;
   const cutoff = getTimeRangeCutoff(chartTimeRange);
-  const curve = cutoff > 0
-    ? data.pnl_curve.filter(p => new Date(p.time).getTime() >= cutoff)
-    : data.pnl_curve;
-  const now = new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' });
-  const labels = curve.map(p => new Date(p.time).toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' }));
-  const values = curve.map(p => p.capital);
-  if (!values.length || values[values.length - 1] !== data.capital.current) {
-    labels.push(now); values.push(data.capital.current);
-  }
-  // Ensure at least 2 points so the chart draws a visible line
-  if (values.length === 1) {
-    labels.unshift('Start'); values.unshift(data.capital.start);
+  const filterCurve = (curve) => cutoff > 0
+    ? curve.filter(p => new Date(p.time).getTime() >= cutoff) : curve;
+
+  // Convert capital-based curve to ROI% {x: timestamp, y: roi%}
+  function toRoiPoints(curve, startCap) {
+    if (!curve || !curve.length || !startCap) return [];
+    return curve.map(p => ({
+      x: new Date(p.time).getTime(),
+      y: (p.capital - startCap) / startCap * 100,
+    }));
   }
 
-  // EMA trend line (period 10 = smoothed over ~10 trades)
-  const emaPeriod = Math.max(5, Math.min(10, Math.floor(values.length / 3)));
-  const emaValues = calcEMA(values, emaPeriod);
-  // Color trend line based on direction (last EMA vs 3 points ago)
-  const lastEma = emaValues.length ? emaValues[emaValues.length - 1] : data.capital.start;
-  const trendColor = lastEma >= data.capital.start ? 'rgba(74,222,128,0.7)' : 'rgba(248,113,113,0.7)';
+  // PULSE: from data.pnl_curve [{time, capital}]
+  const pulseCurve = filterCurve(data.pnl_curve || []);
+  const pulsePoints = toRoiPoints(pulseCurve, data.capital.start);
+  // Append live point
+  const nowTs = Date.now();
+  const pulseRoi = data.capital.start > 0 ? (data.capital.current - data.capital.start) / data.capital.start * 100 : 0;
+  if (pulsePoints.length && pulsePoints[pulsePoints.length - 1].x < nowTs - 5000) {
+    pulsePoints.push({ x: nowTs, y: pulseRoi });
+  }
 
-  pnlChart.data.labels = labels;
-  pnlChart.data.datasets[0].data = values;
-  pnlChart.data.datasets[1].data = emaValues;
-  pnlChart.data.datasets[1].borderColor = trendColor;
-  // Reference line at starting capital
-  pnlChart.data.datasets[2].data = values.map(() => data.capital.start);
-  const last = values[values.length - 1] || 1000;
-  const allVals = values.concat(emaValues);
-  const mn = Math.min(...allVals), mx = Math.max(...allVals);
-  const pnlPad = Math.max((mx - mn) * 0.2, 10);
-  pnlChart.options.scales.y.min = Math.floor(mn - pnlPad);
-  pnlChart.options.scales.y.max = Math.ceil(mx + pnlPad);
+  // Combined: from data.combined.pnl_curve [{time, capital}]
+  const combCurve = filterCurve((data.combined || {}).pnl_curve || []);
+  const combPoints = toRoiPoints(combCurve, data.capital.start);
+
+  // Signal: from lastSignalData.pnl_curve [{time, capital}]
+  let sigPoints = [];
+  if (lastSignalData && lastSignalData.pnl_curve) {
+    const sigCurve = filterCurve(lastSignalData.pnl_curve);
+    sigPoints = sigCurve.map(p => ({
+      x: new Date(p.time).getTime(),
+      y: p.capital != null ? (p.capital - 1000) / 1000 * 100 : (p.roi_pct || 0),
+    }));
+  }
+
+  // Follow: from lastFollowData.pnl_curve [{time, capital}]
+  let followPoints = [];
+  if (lastFollowData && lastFollowData.pnl_curve) {
+    const fCurve = filterCurve(lastFollowData.pnl_curve);
+    const fStart = (lastFollowData.capital || {}).start || 1000;
+    followPoints = toRoiPoints(fCurve, fStart);
+  }
+
+  // Update datasets: 0=Combined, 1=PULSE, 2=Signal, 3=Follow
+  pnlChart.data.datasets[0].data = combPoints;
+  pnlChart.data.datasets[1].data = pulsePoints;
+  pnlChart.data.datasets[2].data = sigPoints;
+  pnlChart.data.datasets[3].data = followPoints;
+
+  // Auto-scale Y axis
+  const all = [...combPoints, ...pulsePoints, ...sigPoints, ...followPoints].map(p => p.y);
+  if (all.length) {
+    const mn = Math.min(...all, 0), mx = Math.max(...all, 0);
+    const pad = Math.max((mx - mn) * 0.25, 1);
+    pnlChart.options.scales.y.min = mn - pad;
+    pnlChart.options.scales.y.max = mx + pad;
+  }
+
   pnlChart.update('none');
-  document.getElementById('pnl-chart-value').textContent = 'EUR ' + data.capital.current.toLocaleString('en-US', { minimumFractionDigits: 2 });
-  document.getElementById('pnl-chart-value').style.color = data.capital.current >= data.capital.start ? 'var(--green)' : 'var(--red)';
+
+  // Header value: best performing strategy ROI
+  const valEl = document.getElementById('pnl-chart-value');
+  valEl.textContent = `${pulseRoi >= 0 ? '+' : ''}${pulseRoi.toFixed(2)}% PULSE`;
+  valEl.style.color = pulseRoi >= 0 ? 'var(--green)' : 'var(--red)';
 }
 
 // ============================================================
@@ -1980,6 +2031,14 @@ function updateSignalTab(data) {
   document.getElementById('signal-avg-latency').textContent =
     stats.avg_latency_ms > 0 ? `${stats.avg_latency_ms.toFixed(0)} ms` : '--';
 
+  // Quality breakdown
+  const qh = stats.quality_high || {};
+  const ql = stats.quality_low || {};
+  document.getElementById('signal-quality-high').textContent =
+    qh.total > 0 ? `${qh.accuracy}% (${qh.correct}/${qh.total})` : '--';
+  document.getElementById('signal-quality-low').textContent =
+    ql.total > 0 ? `${ql.accuracy}% (${ql.correct}/${ql.total})` : '--';
+
   // Active Windows Grid
   const grid = document.getElementById('signal-windows-grid');
   const noWin = document.getElementById('signal-no-windows');
@@ -2038,35 +2097,46 @@ function updateSignalTab(data) {
     tbody.innerHTML = signals.slice(0, 50).map(s => {
       const dir = s.direction.toUpperCase();
       const dirColor = dir === 'UP' ? 'var(--green)' : 'var(--red)';
-      const confPct = (s.confidence * 100).toFixed(0);
-      const confColor = s.confidence >= 0.7 ? 'var(--green)' : s.confidence >= 0.4 ? 'var(--orange)' : 'var(--text-dim)';
       const t = new Date(s.time);
       const timeStr = t.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       const slugShort = s.slug.replace('btc-updown-', 'BTC ').replace('eth-updown-', 'ETH ');
 
+      const quality = s.quality || 'low';
+      const qualityHtml = quality === 'high'
+        ? '<span style="color:var(--green);font-weight:700;font-size:10px">HIGH</span>'
+        : '<span style="color:var(--text-dim);font-size:10px">LOW</span>';
+
+      const betHtml = s.suggested_bet_usd > 0
+        ? `<span style="font-family:'JetBrains Mono',monospace;color:var(--accent)">$${s.suggested_bet_usd.toFixed(0)}</span>`
+        : '<span style="color:var(--text-dim)">skip</span>';
+
       let outcomeHtml, pnlHtml;
       if (s.outcome === 'correct') {
         outcomeHtml = '<span style="color:var(--green);font-weight:700">CORRECT</span>';
-        pnlHtml = `<span style="color:var(--green);font-family:'JetBrains Mono',monospace">+$${(s.sim_pnl||0).toFixed(2)}</span>`;
+        pnlHtml = s.sim_pnl > 0
+          ? `<span style="color:var(--green);font-family:'JetBrains Mono',monospace">+$${s.sim_pnl.toFixed(2)}</span>`
+          : '<span style="color:var(--text-dim)">$0</span>';
       } else if (s.outcome === 'wrong') {
         outcomeHtml = '<span style="color:var(--red);font-weight:700">WRONG</span>';
-        pnlHtml = `<span style="color:var(--red);font-family:'JetBrains Mono',monospace">-$${Math.abs(s.sim_pnl||0).toFixed(2)}</span>`;
+        pnlHtml = s.sim_pnl < 0
+          ? `<span style="color:var(--red);font-family:'JetBrains Mono',monospace">-$${Math.abs(s.sim_pnl).toFixed(2)}</span>`
+          : '<span style="color:var(--text-dim)">$0</span>';
       } else {
         outcomeHtml = '<span style="color:var(--text-dim)">pending</span>';
         pnlHtml = '<span style="color:var(--text-dim)">--</span>';
       }
 
-      return `<tr>
+      return `<tr style="${quality === 'low' ? 'opacity:0.5' : ''}">
         <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${timeStr}</td>
         <td style="font-size:11px">${slugShort}</td>
         <td style="color:${dirColor};font-weight:700">${dir}</td>
+        <td>${qualityHtml}</td>
         <td>${outcomeHtml}</td>
         <td>${pnlHtml}</td>
-        <td style="color:${confColor};font-family:'JetBrains Mono',monospace;font-weight:600">${confPct}%</td>
+        <td>${betHtml}</td>
         <td style="font-family:'JetBrains Mono',monospace">${(s.bias * 100).toFixed(0)}%</td>
         <td style="font-family:'JetBrains Mono',monospace">$${s.total_usdc.toFixed(0)}</td>
         <td>${s.trade_count}</td>
-        <td style="font-family:'JetBrains Mono',monospace">${s.avg_latency_ms > 0 ? s.avg_latency_ms.toFixed(0) + 'ms' : '--'}</td>
       </tr>`;
     }).join('');
   }
