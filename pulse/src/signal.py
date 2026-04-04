@@ -276,6 +276,15 @@ class SignalAggregator:
         direction = win.dominant_direction
         bias = win.bias if direction == "up" else (1.0 - win.bias)
 
+        # Actual average entry price from trades (usdc / shares for dominant side)
+        if direction == "up":
+            avg_entry_price = (win.up_usdc / win.up_shares
+                               if win.up_shares > 0 else 0.5)
+        else:
+            avg_entry_price = (win.down_usdc / win.down_shares
+                               if win.down_shares > 0 else 0.5)
+        avg_entry_price = max(0.01, min(0.99, avg_entry_price))
+
         # Confidence: composite score from bias strength, trade count, and volume
         bias_score = (bias - 0.5) / 0.5  # 0.0 at 50%, 1.0 at 100%
         count_score = min(1.0, win.trade_count / 30)  # saturates at 30 trades
@@ -288,6 +297,7 @@ class SignalAggregator:
             "direction": direction,
             "confidence": confidence,
             "bias": round(bias, 4),
+            "avg_entry_price": round(avg_entry_price, 4),
             "up_usdc": round(win.up_usdc, 2),
             "down_usdc": round(win.down_usdc, 2),
             "total_usdc": round(win.total_usdc, 2),
@@ -390,7 +400,7 @@ class SignalAggregator:
 
                     # Simulated P&L: 1:1 with Bonereaper's actual window volume
                     stake = sig["total_usdc"]  # what he actually deployed
-                    entry_price = sig.get("bias", 0.65)
+                    entry_price = sig.get("avg_entry_price") or sig.get("bias", 0.65)
                     if correct:
                         payout_mult = 1.0 / entry_price if entry_price > 0 else 1.0
                         pnl = stake * (payout_mult - 1)
