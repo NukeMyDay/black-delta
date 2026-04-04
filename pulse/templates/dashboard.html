@@ -869,6 +869,17 @@
     </div>
   </div>
 
+  <!-- Wallet Input -->
+  <div class="follow-add-form" id="signal-add-form">
+    <input type="text" id="signal-addr-input" placeholder="0x... wallet address" spellcheck="false">
+    <input type="text" id="signal-label-input" placeholder="Label (optional)" style="max-width:160px">
+    <button id="signal-add-btn" onclick="addSignalWallet()">Add</button>
+  </div>
+  <table class="trade-table" id="signal-wallets-table" style="margin-bottom:var(--spacing-md)">
+    <thead><tr><th>Wallet</th><th>Label</th><th>Trades</th><th></th></tr></thead>
+    <tbody id="signal-wallets-body"></tbody>
+  </table>
+
   <!-- Signal Stats -->
   <div class="follow-stats" id="signal-stats">
     <div class="follow-stat-card">
@@ -1814,6 +1825,26 @@ function updateSignalTab(data) {
   const config = data.config || {};
   const windows = data.windows || [];
   const signals = data.signals || [];
+  const feed = data.feed || {};
+  const wallets = feed.wallets || [];
+
+  // Wallet table
+  const wtBody = document.getElementById('signal-wallets-body');
+  const wtTable = document.getElementById('signal-wallets-table');
+  if (wallets.length === 0) {
+    wtTable.style.display = 'none';
+  } else {
+    wtTable.style.display = '';
+    wtBody.innerHTML = wallets.map(w => {
+      const addrShort = w.address.slice(0, 6) + '...' + w.address.slice(-4);
+      return `<tr>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:11px">${addrShort}</td>
+        <td>${w.label || '<span style="color:var(--text-dim)">--</span>'}</td>
+        <td style="font-family:'JetBrains Mono',monospace">${w.trades || 0}</td>
+        <td style="text-align:right"><button onclick="removeSignalWallet('${w.address}')" style="background:none;border:1px solid var(--border);color:var(--red);cursor:pointer;padding:2px 8px;border-radius:4px;font-size:10px">Remove</button></td>
+      </tr>`;
+    }).join('');
+  }
 
   // Status bar
   const dot = document.getElementById('signal-dot');
@@ -1917,6 +1948,40 @@ function updateSignalTab(data) {
     }).join('');
   }
 }
+
+async function addSignalWallet() {
+  const addr = document.getElementById('signal-addr-input').value.trim();
+  const label = document.getElementById('signal-label-input').value.trim();
+  if (!addr || !addr.startsWith('0x')) return;
+  try {
+    await fetch('/api/follow/wallets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: addr, label }),
+    });
+    document.getElementById('signal-addr-input').value = '';
+    document.getElementById('signal-label-input').value = '';
+    pollSignal();
+    pollFollow();
+  } catch (e) { console.error('Add signal wallet:', e); }
+}
+
+async function removeSignalWallet(address) {
+  if (!confirm('Remove this wallet?')) return;
+  try {
+    await fetch('/api/follow/wallets', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address }),
+    });
+    pollSignal();
+    pollFollow();
+  } catch (e) { console.error('Remove signal wallet:', e); }
+}
+
+document.getElementById('signal-addr-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') addSignalWallet();
+});
 
 function updateSignalThresholdLabel(val) {
   document.getElementById('signal-bias-label').textContent = val + '%';

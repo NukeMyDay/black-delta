@@ -658,7 +658,12 @@ async def api_follow_feed_status():
 async def api_signal():
     """Signal module state: active windows, emitted signals, stats."""
     if _signal:
-        return JSONResponse(_signal.get_snapshot())
+        data = _signal.get_snapshot()
+        if _follow_feed:
+            data["feed"] = _follow_feed.get_status()
+        else:
+            data["feed"] = {"connected": False, "wallets_count": 0, "wallets": []}
+        return JSONResponse(data)
     return JSONResponse({"error": "signal module not initialized"})
 
 
