@@ -24,24 +24,24 @@ Strategy (Scout + Flip Detection + Entry-Price Sizing):
   Result: 1 signal per window max. Direction flips = no bet.
 """
 
+import os
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
 
-# --- Bet Sizing ---
-WIN_RATE = 0.70              # empirical from 30 signals (bug-corrected)
-KELLY_SAFETY = 0.25          # Quarter-Kelly for small sample sizes
-ENTRY_FULL = 0.60            # avg_entry < this -> full Quarter-Kelly
-ENTRY_HALF = 0.70            # 0.60 <= avg_entry < this -> half Quarter-Kelly
-                              # avg_entry >= 0.70 -> skip (Kelly ~0 at 70% WR)
-SIM_START_CAPITAL = 1000.0
+# --- Bet Sizing (all overridable via .env) ---
+WIN_RATE = float(os.getenv("SIGNAL_WIN_RATE", "0.70"))
+KELLY_SAFETY = float(os.getenv("SIGNAL_KELLY_FRACTION", "0.125"))  # ⅛-Kelly (conservative for €1k)
+ENTRY_FULL = float(os.getenv("SIGNAL_ENTRY_FULL", "0.60"))
+ENTRY_HALF = float(os.getenv("SIGNAL_ENTRY_HALF", "0.70"))
+SIM_START_CAPITAL = float(os.getenv("SIGNAL_START_CAPITAL", "1000.0"))
 
 # --- Scout + Bet Thresholds ---
-SCOUT_MIN_ELAPSED = 30       # seconds into window before scouting
-SCOUT_MIN_TRADES = 8         # minimum trades before scout fires
-BET_MIN_ELAPSED = 90         # seconds into window before bet fires
-BET_MIN_TRADES = 15          # minimum trades before bet fires
+SCOUT_MIN_ELAPSED = int(os.getenv("SIGNAL_SCOUT_MIN_ELAPSED", "30"))
+SCOUT_MIN_TRADES = int(os.getenv("SIGNAL_SCOUT_MIN_TRADES", "8"))
+BET_MIN_ELAPSED = int(os.getenv("SIGNAL_BET_MIN_ELAPSED", "90"))
+BET_MIN_TRADES = int(os.getenv("SIGNAL_BET_MIN_TRADES", "15"))
 
 
 class WindowAccumulator:
@@ -546,6 +546,7 @@ class SignalAggregator:
                     "entry_full": ENTRY_FULL,
                     "entry_half": ENTRY_HALF,
                     "win_rate": WIN_RATE,
+                    "kelly_fraction": KELLY_SAFETY,
                 },
                 "stats": {
                     "total_trades_ingested": self.total_trades_ingested,

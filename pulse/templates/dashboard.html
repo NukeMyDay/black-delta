@@ -973,7 +973,7 @@
     <input type="number" id="signal-min-usdc-input" value="50" min="0" max="500" step="10"
       style="width:70px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:'JetBrains Mono',monospace;font-size:12px">
     <button onclick="applySignalConfig()" style="padding:5px 14px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">Apply</button>
-    <span style="color:var(--text-dim);font-size:10px;margin-left:8px">Scout: 30s/8 trades → Bet: 90s/15+ trades | Win Rate: 70% | Kelly: ¼</span>
+    <span id="signal-config-info" style="color:var(--text-dim);font-size:10px;margin-left:8px">Scout → Bet | loading config...</span>
   </div>
 
   <!-- Active Windows -->
@@ -2016,6 +2016,12 @@ function updateSignalTab(data) {
   }
   document.getElementById('signal-latency').textContent =
     stats.avg_latency_ms > 0 ? `${stats.avg_latency_ms.toFixed(0)} ms avg latency` : '-- ms';
+
+  // Config info line (live from API)
+  const kellyPct = config.kelly_fraction ? `${(config.kelly_fraction * 100).toFixed(1)}%` : '?';
+  const kellyLabel = config.kelly_fraction <= 0.126 ? '⅛' : config.kelly_fraction <= 0.26 ? '¼' : `${kellyPct}`;
+  document.getElementById('signal-config-info').textContent =
+    `Scout: ${config.scout_min_elapsed || 30}s/${config.scout_min_trades || 8}t → Bet: ${config.bet_min_elapsed || 90}s/${config.bet_min_trades || 15}+t | WR: ${((config.win_rate || 0.7) * 100).toFixed(0)}% | Kelly: ${kellyLabel} (${kellyPct}) | Full < $${(config.entry_full || 0.6).toFixed(2)} | Half < $${(config.entry_half || 0.7).toFixed(2)}`;
 
   // Accuracy stats
   const acc = stats.accuracy || 0;
