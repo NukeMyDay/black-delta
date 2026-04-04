@@ -918,6 +918,10 @@ def main():
     # Load persisted wallets from disk first
     follow_feed.load_wallets()
 
+    # Ensure default wallet (Bonereaper) is always present with label
+    BONEREAPER = "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30"
+    follow_feed.add_wallet(BONEREAPER, "Bonereaper (default)")
+
     # Then add any from .env (merges, no duplicates)
     if FOLLOW_WALLETS:
         for wallet in FOLLOW_WALLETS.split(","):
