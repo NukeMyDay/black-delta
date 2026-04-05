@@ -1,58 +1,68 @@
 #!/bin/bash
-# One-time VPS setup for BLACK DELTA
+# One-time VPS setup for BLACK DELTA (Docker)
 # Run as root on your Hostinger VPS
 set -e
 
 echo "=== BLACK DELTA VPS Setup ==="
 
-# 1. Install dependencies
-echo "[1/6] Installing packages..."
+# 1. Install nginx + certbot
+echo "[1/5] Installing packages..."
 apt update -qq
-apt install -y nginx certbot python3-certbot-nginx python3-pip apache2-utils
+apt install -y nginx certbot python3-certbot-nginx apache2-utils
 
 # 2. Setup Basic Auth
 echo ""
-echo "[2/6] Setting up authentication..."
+echo "[2/5] Setting up authentication..."
 read -p "Choose a username: " AUTH_USER
 htpasswd -c /etc/nginx/.htpasswd-blackdelta "$AUTH_USER"
 echo "Auth configured for user: $AUTH_USER"
 
 # 3. Nginx config
-echo "[3/6] Configuring Nginx..."
+echo "[3/5] Configuring Nginx..."
 cp /root/black-delta/pulse/nginx-black-delta.conf /etc/nginx/sites-available/black-delta
 ln -sf /etc/nginx/sites-available/black-delta /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 
-# Temporarily disable SSL lines for initial certbot run
-sed -i 's/listen 443/#listen 443/' /etc/nginx/sites-available/black-delta
-sed -i 's/ssl_/#ssl_/' /etc/nginx/sites-available/black-delta
-sed -i '/return 301/d' /etc/nginx/sites-available/black-delta
+# Temp config for certbot (no SSL yet)
+cat > /etc/nginx/sites-available/black-delta <<'TMPCONF'
+server {
+    listen 80;
+    server_name black-delta.net www.black-delta.net;
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        auth_basic "Black Delta";
+        auth_basic_user_file /etc/nginx/.htpasswd-blackdelta;
+    }
+}
+TMPCONF
 nginx -t && systemctl reload nginx
 
 # 4. SSL Certificate
-echo "[4/6] Getting SSL certificate..."
+echo "[4/5] Getting SSL certificate..."
 certbot --nginx -d black-delta.net -d www.black-delta.net --non-interactive --agree-tos --email admin@black-delta.net
 
 # Restore full config with SSL
 cp /root/black-delta/pulse/nginx-black-delta.conf /etc/nginx/sites-available/black-delta
 nginx -t && systemctl reload nginx
 
-# 5. Systemd service
-echo "[5/6] Setting up systemd service..."
-cp /root/black-delta/pulse/black-delta.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable black-delta
-systemctl start black-delta
+# 5. Start Black Delta
+echo "[5/5] Starting Black Delta..."
+cd /root/black-delta/pulse
+cp .env.example .env
+echo ""
+echo ">>> Edit .env with your credentials: nano .env"
+echo ">>> Then start with: docker compose up -d --build"
 
-# 6. Firewall
-echo "[6/6] Opening ports..."
-ufw allow 80/tcp
-ufw allow 443/tcp
+# Firewall
+ufw allow 80/tcp 2>/dev/null || true
+ufw allow 443/tcp 2>/dev/null || true
 
 echo ""
 echo "=== Setup complete ==="
 echo "Dashboard: https://black-delta.net"
-echo "Auth: $AUTH_USER / (password you entered)"
-echo ""
-echo "Next step: Point black-delta.net DNS to this server's IP"
 echo "Server IP: $(curl -s ifconfig.me)"
+echo ""
+echo "Next steps:"
+echo "  1. Point black-delta.net DNS (A-Record) to this IP"
+echo "  2. Edit .env: nano /root/black-delta/pulse/.env"
+echo "  3. Start: cd /root/black-delta/pulse && docker compose up -d --build"

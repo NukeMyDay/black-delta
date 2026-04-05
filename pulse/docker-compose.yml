@@ -1,15 +1,15 @@
 services:
-  pulse:
+  black-delta:
     build: .
-    container_name: pulse-bot
-    restart: unless-stopped
+    container_name: black-delta
+    restart: always
     ports:
-      - "8888:8888"
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
     env_file:
       - .env
-    volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
     dns:
       - 8.8.8.8
       - 1.1.1.1

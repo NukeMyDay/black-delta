@@ -1,18 +1,14 @@
 #!/bin/bash
-# Deploy script for BLACK DELTA on VPS
+# Deploy script for BLACK DELTA on VPS (Docker)
 # Usage: ./deploy.sh
-
 set -e
 
 echo "[DEPLOY] Pulling latest code..."
 git pull origin main
 
-echo "[DEPLOY] Installing dependencies..."
-pip install -r requirements.txt --quiet
-
-echo "[DEPLOY] Restarting service..."
-sudo systemctl restart black-delta
+echo "[DEPLOY] Rebuilding and restarting container..."
+docker compose up -d --build
 
 echo "[DEPLOY] Status:"
-sudo systemctl status black-delta --no-pager -l
+docker compose ps
 echo "[DEPLOY] Done."
