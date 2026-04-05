@@ -504,6 +504,7 @@ body {
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('trades')">Bets</button>
+    <button class="tab-btn" onclick="switchTab('logs')">Logs</button>
     <button class="tab-btn" onclick="switchTab('investors')">Investors</button>
   </div>
 
@@ -523,7 +524,7 @@ body {
     <div class="table-scroll">
       <table class="data-table" id="trades-table">
         <thead><tr>
-          <th>Time</th><th>Market</th><th>Dir</th><th>Src</th><th>Fill</th><th>Tier</th><th>Bias</th><th>Stake</th><th>Payout</th><th>Outcome</th><th>P&L</th>
+          <th>Time</th><th>Market</th><th>Direction</th><th>Entry $</th><th>Tier</th><th>Outcome</th><th>P&L</th><th>Bet Size</th><th>Bias</th><th>Volume</th><th>Trades</th>
         </tr></thead>
         <tbody id="trades-body"></tbody>
       </table>
@@ -534,6 +535,17 @@ body {
     </div>
   </div>
 
+
+  <!-- Tab: Logs -->
+  <div class="tab-content" id="tab-logs">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:var(--spacing-sm)">
+      <div class="card-label" style="margin:0">Live Logs</div>
+      <span id="log-count" style="font-size:11px;color:var(--text-dim)">0 lines</span>
+      <button onclick="clearLogs()" style="margin-left:auto;background:none;border:1px solid var(--border);color:var(--text-dim);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:10px">Clear</button>
+    </div>
+    <div id="log-container" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px;height:500px;overflow-y:auto;font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--text-dim)">
+    </div>
+  </div>
 
   <!-- Tab: Investors -->
   <div class="tab-content" id="tab-investors">
@@ -1016,31 +1028,52 @@ function renderTrades(follow) {
 
   tbody.innerHTML = bets.slice(0, tradesShown).map(t => {
     const time = t.time ? new Date(t.time).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
-    const market = (t.event_slug || t.slug || '').split('-').slice(0, 2).join(' ').toUpperCase();
+    // Market: full slug like "BTC 5m-1775430600"
+    const slugParts = (t.event_slug || t.slug || '').split('-');
+    const market = slugParts.length >= 3
+      ? slugParts[0].toUpperCase() + ' ' + slugParts.slice(1).join('-')
+      : (t.event_slug || t.slug || '');
     const dir = (t.direction || '').toUpperCase();
     const dirColor = dir === 'UP' ? 'var(--green)' : dir === 'DOWN' ? 'var(--red)' : 'var(--text)';
-    const srcEntry = t.source_entry ? '$' + Number(t.source_entry).toFixed(2) : '--';
-    const fillPrice = '$' + Number(t.fill_price || t.contract_price || 0).toFixed(2);
-    const tier = t.entry_tier || '--';
-    const bias = t.bias != null ? Math.round(t.bias * 100) + '%' : '--';
-    const payout = t.payout_multiplier ? t.payout_multiplier.toFixed(1) + 'x' : '--';
+    const entry = '$' + Number(t.fill_price || t.contract_price || 0).toFixed(2);
+    // Tier colored
+    const tier = (t.entry_tier || '--').toUpperCase();
+    const tierColor = tier === 'FULL' ? 'var(--green)' : tier === 'HALF' ? 'var(--orange)' : 'var(--text-dim)';
+    // Outcome: CORRECT / WRONG / pending
     const outcome = t.outcome || 'pending';
-    const outcomeClass = outcome === 'win' || outcome === 'closed' ? 'win' : outcome === 'lose' ? 'lose' : 'pending';
+    let outcomeLabel, outcomeColor;
+    if (outcome === 'win' || outcome === 'correct' || outcome === 'closed') {
+      outcomeLabel = 'CORRECT'; outcomeColor = 'var(--green)';
+    } else if (outcome === 'lose' || outcome === 'wrong') {
+      outcomeLabel = 'WRONG'; outcomeColor = 'var(--red)';
+    } else {
+      outcomeLabel = 'pending'; outcomeColor = 'var(--text-dim)';
+    }
+    // P&L
     const pnl = t.pnl_usd || 0;
-    const pnlStr = outcome === 'pending' ? '--' : (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
-    const pnlClass = pnl >= 0 ? 'win' : 'lose';
+    const pnlStr = outcome === 'pending' ? '--' :
+      (pnl >= 0 ? '+$' + Number(pnl).toFixed(2) : '-$' + Number(Math.abs(pnl)).toFixed(2));
+    const pnlColor = outcome === 'pending' ? 'var(--text-dim)' : pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    // Bet size
+    const betSize = t.stake_usd ? '$' + Math.round(t.stake_usd) : '--';
+    // Bias
+    const bias = t.bias != null ? Math.round(t.bias * 100) + '%' : '--';
+    // Volume
+    const vol = t.total_usdc ? '$' + Math.round(t.total_usdc) : '--';
+    // Trades
+    const trades_n = t.trade_count || '--';
     return `<tr>
       <td>${time}</td>
       <td>${market}</td>
-      <td style="color:${dirColor};font-weight:600">${dir}</td>
-      <td style="color:var(--text-dim)">${srcEntry}</td>
-      <td>${fillPrice}</td>
-      <td><span style="font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(255,255,255,0.06)">${tier}</span></td>
+      <td style="color:${dirColor};font-weight:700">${dir}</td>
+      <td>${entry}</td>
+      <td style="color:${tierColor};font-weight:600">${tier}</td>
+      <td style="color:${outcomeColor};font-weight:700">${outcomeLabel}</td>
+      <td style="color:${pnlColor}">${pnlStr}</td>
+      <td>${betSize}</td>
       <td>${bias}</td>
-      <td>$${Number(t.stake_usd || 0).toFixed(2)}</td>
-      <td>${payout}</td>
-      <td class="${outcomeClass}">${outcome.toUpperCase()}</td>
-      <td class="${outcome === 'pending' ? 'pending' : pnlClass}">${pnlStr}</td>
+      <td>${vol}</td>
+      <td>${trades_n}</td>
     </tr>`;
   }).join('');
 }
@@ -1159,7 +1192,72 @@ function switchTab(name) {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   event.target.classList.add('active');
+  if (name === 'logs') fetchLogs();
 }
+
+// ============================================================
+//  Logs Tab — real-time log viewer
+// ============================================================
+let lastLogTime = '';
+let logLines = [];
+
+function colorizeLog(msg) {
+  // Color code log prefixes
+  if (msg.includes('[SIGNAL]')) return `<span style="color:#4ade80">${esc(msg)}</span>`;
+  if (msg.includes('[FOLLOW]')) return `<span style="color:#60a5fa">${esc(msg)}</span>`;
+  if (msg.includes('[EXEC]')) return `<span style="color:#f59e0b">${esc(msg)}</span>`;
+  if (msg.includes('[RISK]') || msg.includes('AUTO-PAUSE')) return `<span style="color:#ef4444;font-weight:600">${esc(msg)}</span>`;
+  if (msg.includes('[REDEEM]')) return `<span style="color:#a78bfa">${esc(msg)}</span>`;
+  if (msg.includes('[BALANCE]') || msg.includes('[STATE]')) return `<span style="color:rgba(255,255,255,0.35)">${esc(msg)}</span>`;
+  if (msg.includes('[RESOLVE]')) return `<span style="color:#2dd4bf">${esc(msg)}</span>`;
+  return `<span>${esc(msg)}</span>`;
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function fetchLogs() {
+  try {
+    const url = lastLogTime ? `/api/logs?since=${encodeURIComponent(lastLogTime)}` : '/api/logs';
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const newLogs = data.logs || [];
+    if (newLogs.length > 0) {
+      lastLogTime = newLogs[newLogs.length - 1].time;
+      logLines.push(...newLogs);
+      // Keep last 500
+      if (logLines.length > 500) logLines = logLines.slice(-500);
+      renderLogs();
+    }
+  } catch (e) {}
+}
+
+function renderLogs() {
+  const container = document.getElementById('log-container');
+  if (!container) return;
+  const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 30;
+  container.innerHTML = logLines.map(l => {
+    const t = new Date(l.time).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    return `<div><span style="color:rgba(255,255,255,0.25)">${t}</span> ${colorizeLog(l.msg)}</div>`;
+  }).join('');
+  setText('log-count', logLines.length + ' lines');
+  if (wasAtBottom) container.scrollTop = container.scrollHeight;
+}
+
+function clearLogs() {
+  logLines = [];
+  lastLogTime = '';
+  renderLogs();
+}
+
+// Poll logs every 2s when logs tab is active
+setInterval(() => {
+  const logsTab = document.getElementById('tab-logs');
+  if (logsTab && logsTab.classList.contains('active')) fetchLogs();
+}, 2000);
 </script>
 </body>
 </html>

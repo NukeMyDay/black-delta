@@ -15,12 +15,15 @@ Usage:
 """
 
 import argparse
+import builtins
 import csv
 import io
 import json
 import os
+import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 
 import uvicorn
@@ -41,6 +44,30 @@ load_dotenv()
 
 # Follow mode config
 FOLLOW_WALLETS = os.getenv("FOLLOW_WALLETS", "")
+
+# ==================================================================
+#  Log capture — ring buffer for dashboard log viewer
+# ==================================================================
+_log_buffer: deque[dict] = deque(maxlen=500)
+_log_lock = threading.Lock()
+_original_print = builtins.print
+
+
+def _capturing_print(*args, **kwargs):
+    """Intercept print() calls to capture log lines for the dashboard."""
+    _original_print(*args, **kwargs)
+    try:
+        msg = " ".join(str(a) for a in args)
+        with _log_lock:
+            _log_buffer.append({
+                "time": datetime.now(timezone.utc).isoformat(),
+                "msg": msg,
+            })
+    except Exception:
+        pass
+
+
+builtins.print = _capturing_print
 
 app = FastAPI(title="BLACK DELTA")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -457,6 +484,10 @@ def _handle_signal(signal: dict):
         "win_rate": win_rate,
         "fill_price": fill_price,
         "bias": round(bias, 4),
+        "up_usdc": signal.get("up_usdc", 0),
+        "down_usdc": signal.get("down_usdc", 0),
+        "total_usdc": signal.get("total_usdc", 0),
+        "trade_count": signal.get("trade_count", 0),
         "time": datetime.now(timezone.utc).isoformat(),
     }
     state.record_follow_trade(bet_record)
@@ -878,6 +909,17 @@ async def api_follow_feed_status():
     if _follow_feed:
         return JSONResponse(_follow_feed.get_status())
     return JSONResponse({"error": "follow feed not initialized"})
+
+
+@app.get("/api/logs")
+async def api_logs(request: Request):
+    """Return recent log lines. Optional ?since=<iso> to get only new lines."""
+    since = request.query_params.get("since", "")
+    with _log_lock:
+        logs = list(_log_buffer)
+    if since:
+        logs = [l for l in logs if l["time"] > since]
+    return JSONResponse({"logs": logs[-200:]})
 
 
 # ==================================================================
