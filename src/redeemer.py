@@ -1,0 +1,269 @@
+"""
+Auto-redeem resolved Polymarket positions.
+
+After a binary market resolves, winning shares are worth $1 but the
+USDC stays locked until `redeemPositions` is called on the CTF contract.
+This module handles that automatically so capital is recycled.
+
+For GNOSIS_SAFE wallets: executes through the Safe proxy.
+Requires a small amount of MATIC on the signer EOA for gas.
+"""
+
+import os
+import time
+import threading
+from web3 import Web3
+from eth_abi import encode
+
+from src.polymarket import fetch_market, _parse_json_string
+
+# Polygon
+POLYGON_RPC = os.getenv("POLYGON_RPC", "https://polygon-rpc.com")
+
+# Contracts
+CTF_ADDRESS = Web3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
+NEG_RISK_ADAPTER = Web3.to_checksum_address("0xC5d563A36AE78145C45a50134d48A1215220f80a")
+USDC_ADDRESS = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+ZERO_BYTES32 = b"\x00" * 32
+
+# Minimal ABIs
+CTF_ABI = [
+    {
+        "inputs": [
+            {"name": "collateralToken", "type": "address"},
+            {"name": "parentCollectionId", "type": "bytes32"},
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "indexSets", "type": "uint256[]"},
+        ],
+        "name": "redeemPositions",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "conditionId", "type": "bytes32"}],
+        "name": "payoutDenominator",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
+SAFE_EXEC_ABI = [
+    {
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "value", "type": "uint256"},
+            {"name": "data", "type": "bytes"},
+            {"name": "operation", "type": "uint8"},
+            {"name": "safeTxGas", "type": "uint256"},
+            {"name": "baseGas", "type": "uint256"},
+            {"name": "gasPrice", "type": "uint256"},
+            {"name": "gasToken", "type": "address"},
+            {"name": "refundReceiver", "type": "address"},
+            {"name": "signatures", "type": "bytes"},
+        ],
+        "name": "execTransaction",
+        "outputs": [{"name": "success", "type": "bool"}],
+        "stateMutability": "payable",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "nonce",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
+
+class Redeemer:
+    """Auto-redeems resolved Polymarket positions."""
+
+    def __init__(self):
+        self.w3: Web3 | None = None
+        self.private_key: str | None = None
+        self.signer_address: str | None = None
+        self.funder_address: str | None = None
+        self.sig_type: int = 0
+        self.enabled = False
+        self._redeemed: set[str] = set()  # condition IDs already redeemed
+
+    def initialize(self, private_key: str, signer: str, funder: str, sig_type: int) -> bool:
+        """Initialize web3 connection."""
+        try:
+            self.w3 = Web3(Web3.HTTPProvider(POLYGON_RPC, request_kwargs={"timeout": 10}))
+            if not self.w3.is_connected():
+                print("[REDEEM] Cannot connect to Polygon RPC")
+                return False
+
+            self.private_key = private_key
+            self.signer_address = Web3.to_checksum_address(signer)
+            self.funder_address = Web3.to_checksum_address(funder)
+            self.sig_type = sig_type
+
+            # Check MATIC balance for gas
+            balance = self.w3.eth.get_balance(self.signer_address)
+            matic = self.w3.from_wei(balance, "ether")
+            if matic < 0.001:
+                print(f"[REDEEM] WARNING: Signer has {matic:.4f} MATIC — need ~0.01 for gas")
+                print(f"[REDEEM]   Send MATIC to: {self.signer_address}")
+                # Still enable — balance might increase later
+            else:
+                print(f"[REDEEM] Signer MATIC balance: {matic:.4f}")
+
+            self.enabled = True
+            print("[REDEEM] Auto-redeem initialized")
+            return True
+        except Exception as e:
+            print(f"[REDEEM] Init failed: {e}")
+            return False
+
+    def get_condition_id(self, slug: str) -> str | None:
+        """Get conditionId for a market from Gamma API."""
+        try:
+            market = fetch_market(slug)
+            if market and market.get("conditionId"):
+                return market["conditionId"]
+        except Exception:
+            pass
+        return None
+
+    def is_resolved(self, condition_id: str) -> bool:
+        """Check if a condition has been resolved on-chain."""
+        try:
+            ctf = self.w3.eth.contract(address=CTF_ADDRESS, abi=CTF_ABI)
+            cid_bytes = bytes.fromhex(condition_id.replace("0x", ""))
+            denominator = ctf.functions.payoutDenominator(cid_bytes).call()
+            return denominator > 0
+        except Exception:
+            return False
+
+    def redeem(self, condition_id: str, neg_risk: bool = False) -> bool:
+        """Redeem positions for a resolved condition."""
+        if not self.enabled or not self.w3:
+            return False
+
+        if condition_id in self._redeemed:
+            return True
+
+        cid_bytes = bytes.fromhex(condition_id.replace("0x", ""))
+
+        # Build redeemPositions calldata
+        target = NEG_RISK_ADAPTER if neg_risk else CTF_ADDRESS
+        ctf = self.w3.eth.contract(address=target, abi=CTF_ABI)
+        redeem_data = ctf.encodeABI(
+            fn_name="redeemPositions",
+            args=[USDC_ADDRESS, ZERO_BYTES32, cid_bytes, [1, 2]],
+        )
+
+        try:
+            if self.sig_type == 0:
+                # EOA: send tx directly from signer
+                tx = self._build_eoa_tx(target, redeem_data)
+            else:
+                # GNOSIS_SAFE: execute through the Safe proxy
+                tx = self._build_safe_tx(target, redeem_data)
+
+            if not tx:
+                return False
+
+            signed = self.w3.eth.account.sign_transaction(tx, self.private_key)
+            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+
+            if receipt.status == 1:
+                self._redeemed.add(condition_id)
+                print(f"[REDEEM] OK: {condition_id[:16]}... tx={tx_hash.hex()[:16]}...")
+                return True
+            else:
+                print(f"[REDEEM] TX reverted: {condition_id[:16]}...")
+                return False
+
+        except Exception as e:
+            print(f"[REDEEM] Failed: {e}")
+            return False
+
+    def _build_eoa_tx(self, to: str, data: bytes) -> dict | None:
+        """Build a direct transaction from the signer."""
+        try:
+            nonce = self.w3.eth.get_transaction_count(self.signer_address)
+            gas_price = self.w3.eth.gas_price
+            tx = {
+                "to": to,
+                "value": 0,
+                "data": data,
+                "nonce": nonce,
+                "gas": 200_000,
+                "gasPrice": min(gas_price * 2, self.w3.to_wei(100, "gwei")),
+                "chainId": 137,
+            }
+            return tx
+        except Exception as e:
+            print(f"[REDEEM] EOA tx build failed: {e}")
+            return None
+
+    def _build_safe_tx(self, to: str, data: bytes) -> dict | None:
+        """Build an execTransaction call on the Gnosis Safe."""
+        try:
+            safe = self.w3.eth.contract(
+                address=self.funder_address, abi=SAFE_EXEC_ABI
+            )
+            zero_addr = "0x0000000000000000000000000000000000000000"
+
+            # Pre-validated signature: r=signer address, s=0, v=1
+            # This tells the Safe the signer has approved via being the sender
+            sig = (
+                self.signer_address[2:].lower().zfill(64)  # r = padded address
+                + "0" * 64  # s = 0
+                + "01"  # v = 1 (pre-validated)
+            )
+            signatures = bytes.fromhex(sig)
+
+            exec_data = safe.encodeABI(
+                fn_name="execTransaction",
+                args=[
+                    Web3.to_checksum_address(to),  # to
+                    0,  # value
+                    bytes.fromhex(data.hex() if isinstance(data, bytes) else data[2:]),  # data
+                    0,  # operation (CALL)
+                    0,  # safeTxGas
+                    0,  # baseGas
+                    0,  # gasPrice
+                    zero_addr,  # gasToken
+                    zero_addr,  # refundReceiver
+                    signatures,  # signatures
+                ],
+            )
+
+            nonce = self.w3.eth.get_transaction_count(self.signer_address)
+            gas_price = self.w3.eth.gas_price
+            tx = {
+                "to": self.funder_address,
+                "value": 0,
+                "data": exec_data,
+                "nonce": nonce,
+                "gas": 300_000,
+                "gasPrice": min(gas_price * 2, self.w3.to_wei(100, "gwei")),
+                "chainId": 137,
+            }
+            return tx
+        except Exception as e:
+            print(f"[REDEEM] Safe tx build failed: {e}")
+            return None
+
+    def try_redeem_slug(self, slug: str, neg_risk: bool = False) -> bool:
+        """Try to redeem a resolved market by slug."""
+        cid = self.get_condition_id(slug)
+        if not cid:
+            print(f"[REDEEM] No conditionId for {slug}")
+            return False
+
+        if cid in self._redeemed:
+            return True
+
+        if not self.is_resolved(cid):
+            return False
+
+        return self.redeem(cid, neg_risk)

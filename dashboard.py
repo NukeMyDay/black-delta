@@ -32,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from src.polymarket import fetch_market_outcome
 from src.follow_feed import FollowFeed
 from src.executor import Executor
+from src.redeemer import Redeemer
 from src.signal import SignalAggregator
 from src.state import state
 from src.logger import log_trade
@@ -48,6 +49,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 _follow_feed: FollowFeed | None = None
 _signal: SignalAggregator | None = None
 _executor: Executor | None = None
+_redeemer: Redeemer | None = None
 
 
 # ==================================================================
@@ -88,6 +90,12 @@ def resolve_follow_pending():
                         pnl = t.get("pnl_usd", 0)
                         won = t.get("outcome") == "win"
                         state.record_daily_bet(pnl, won)
+                # Auto-redeem resolved position
+                if _redeemer and _redeemer.enabled:
+                    try:
+                        _redeemer.try_redeem_slug(slug)
+                    except Exception as e:
+                        print(f"[REDEEM] Error for {slug}: {e}")
                 slugs_seen[slug] = True
             else:
                 slugs_seen[slug] = False
@@ -726,7 +734,7 @@ def main():
     parser.add_argument("--port", type=int, default=3000)
     args = parser.parse_args()
 
-    global _follow_feed, _signal, _executor
+    global _follow_feed, _signal, _executor, _redeemer
 
     # Restore state from previous run
     state.load_follow_state()
@@ -782,6 +790,15 @@ def main():
         # Sync dynamic limits (max_bet and daily_loss_limit) from capital + risk level
         _sync_executor_limits()
         print(f"  Max bet: ${executor.max_bet_usd:.2f} | Daily loss limit: ${executor.daily_loss_limit:.2f}")
+
+        # --- Auto-Redeemer ---
+        redeemer = Redeemer()
+        _redeemer = redeemer
+        private_key = os.getenv("POLY_PRIVATE_KEY", "")
+        signer = executor.client.signer.address()
+        funder = executor.client.builder.funder
+        sig_type = executor.client.builder.sig_type
+        redeemer.initialize(private_key, signer, funder, sig_type)
     else:
         print("  Mode: SIMULATION (set POLY_* env vars for live)")
 
