@@ -5,6 +5,7 @@ After a binary market resolves, winning shares are worth $1 but the
 USDC stays locked until `redeemPositions` is called on the CTF contract.
 This module handles that automatically so capital is recycled.
 
+For neg_risk markets: calls the NegRiskAdapter (different ABI + approval required).
 For GNOSIS_SAFE wallets: executes through the Safe proxy.
 Requires a small amount of MATIC on the signer EOA for gas.
 """
@@ -60,11 +61,11 @@ def _test_rpc_raw(url: str, timeout: int = 20) -> tuple[bool, str]:
 
 # Contracts
 CTF_ADDRESS = Web3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
-NEG_RISK_ADAPTER = Web3.to_checksum_address("0xC5d563A36AE78145C45a50134d48A1215220f80a")
+NEG_RISK_ADAPTER = Web3.to_checksum_address("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296")
 USDC_ADDRESS = Web3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
 ZERO_BYTES32 = b"\x00" * 32
 
-# Minimal ABIs
+# Minimal ABIs — CTF redeemPositions (4 params)
 CTF_ABI = [
     {
         "inputs": [
@@ -83,6 +84,54 @@ CTF_ABI = [
         "name": "payoutDenominator",
         "outputs": [{"name": "", "type": "uint256"}],
         "stateMutability": "view",
+        "type": "function",
+    },
+]
+
+# NegRiskAdapter redeemPositions (2 params — different selector!)
+NEG_RISK_REDEEM_ABI = [
+    {
+        "inputs": [
+            {"name": "_conditionId", "type": "bytes32"},
+            {"name": "_amounts", "type": "uint256[]"},
+        ],
+        "name": "redeemPositions",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+]
+
+# ERC-1155 balance + approval (for checking token holdings & approval)
+ERC1155_ABI = [
+    {
+        "inputs": [
+            {"name": "account", "type": "address"},
+            {"name": "id", "type": "uint256"},
+        ],
+        "name": "balanceOf",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"name": "account", "type": "address"},
+            {"name": "operator", "type": "address"},
+        ],
+        "name": "isApprovedForAll",
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"name": "operator", "type": "address"},
+            {"name": "approved", "type": "bool"},
+        ],
+        "name": "setApprovalForAll",
+        "outputs": [],
+        "stateMutability": "nonpayable",
         "type": "function",
     },
 ]
@@ -129,6 +178,7 @@ class Redeemer:
         self._redeemed: set[str] = set()  # condition IDs already redeemed
         self._pending_slugs: dict[str, bool] = {}  # slug → neg_risk, awaiting on-chain resolution
         self._nonce: int | None = None  # locally tracked nonce
+        self._neg_risk_approved = False  # cached: Safe approved NegRiskAdapter on CTF?
 
     def initialize(self, private_key: str, signer: str, funder: str, sig_type: int) -> bool:
         """Initialize web3 connection, trying multiple RPCs."""
@@ -194,15 +244,32 @@ class Redeemer:
         if queued:
             print(f"[REDEEM] Startup: queued {queued} resolved slugs for redemption")
 
-    def get_condition_id(self, slug: str) -> str | None:
-        """Get conditionId for a market from Gamma API."""
+    def get_market_info(self, slug: str) -> dict | None:
+        """Get conditionId, neg_risk, and token_ids for a market from Gamma API."""
         try:
             market = fetch_market(slug)
-            if market and market.get("conditionId"):
-                return market["conditionId"]
+            if not market:
+                return None
+            condition_id = market.get("conditionId")
+            if not condition_id:
+                return None
+
+            neg_risk = bool(market.get("negRisk", False))
+            token_ids = _parse_json_string(market.get("clobTokenIds", []))
+
+            return {
+                "condition_id": condition_id,
+                "neg_risk": neg_risk,
+                "token_ids": token_ids,
+            }
         except Exception as e:
-            print(f"[REDEEM] conditionId lookup failed for {slug}: {e}")
-        return None
+            print(f"[REDEEM] Market info lookup failed for {slug}: {e}")
+            return None
+
+    # Keep old method as alias for backward compatibility
+    def get_condition_id(self, slug: str) -> str | None:
+        info = self.get_market_info(slug)
+        return info["condition_id"] if info else None
 
     def is_resolved(self, condition_id: str) -> bool:
         """Check if a condition has been resolved on-chain."""
@@ -223,22 +290,91 @@ class Redeemer:
         self._nonce += 1
         return nonce
 
-    def _try_redeem_target(self, condition_id: str, cid_bytes: bytes, target: str, label: str) -> bool:
-        """Attempt redemption against a specific contract target."""
-        ctf = self.w3.eth.contract(address=target, abi=CTF_ABI)
-        redeem_data = ctf.encode_abi(
-            "redeemPositions",
-            args=[USDC_ADDRESS, ZERO_BYTES32, cid_bytes, [1, 2]],
-        )
+    # ── Token balance helpers ───────────────────────────────────────────
 
+    def _get_token_holder(self) -> str:
+        """Return the address that holds the conditional tokens."""
+        return self.funder_address if self.sig_type != 0 else self.signer_address
+
+    def _get_token_balances(self, token_ids: list[str]) -> list[int]:
+        """Query ERC-1155 balances on CTF for the token holder."""
+        holder = self._get_token_holder()
+        ctf = self.w3.eth.contract(address=CTF_ADDRESS, abi=ERC1155_ABI)
+        amounts = []
+        for tid in token_ids:
+            try:
+                balance = ctf.functions.balanceOf(holder, int(tid)).call()
+                amounts.append(balance)
+            except Exception as e:
+                print(f"[REDEEM] Balance query failed for token {str(tid)[:16]}...: {e}")
+                amounts.append(0)
+        return amounts
+
+    # ── Approval for NegRiskAdapter ─────────────────────────────────────
+
+    def _check_neg_risk_approval(self) -> bool:
+        """Check if the token holder has approved NegRiskAdapter as CTF operator."""
+        if self._neg_risk_approved:
+            return True
+        try:
+            holder = self._get_token_holder()
+            ctf = self.w3.eth.contract(address=CTF_ADDRESS, abi=ERC1155_ABI)
+            approved = ctf.functions.isApprovedForAll(holder, NEG_RISK_ADAPTER).call()
+            if approved:
+                self._neg_risk_approved = True
+            return approved
+        except Exception as e:
+            print(f"[REDEEM] Approval check failed: {e}")
+            return False
+
+    def _grant_neg_risk_approval(self) -> bool:
+        """Approve NegRiskAdapter as operator on CTF (via Safe execTransaction)."""
+        print(f"[REDEEM] Granting CTF approval for NegRiskAdapter...")
+        ctf = self.w3.eth.contract(address=CTF_ADDRESS, abi=ERC1155_ABI)
+        approve_data = ctf.encode_abi(
+            "setApprovalForAll",
+            args=[NEG_RISK_ADAPTER, True],
+        )
+        ok = self._simulate_and_send(CTF_ADDRESS, approve_data, "approval", "SetApproval")
+        if ok:
+            self._neg_risk_approved = True
+            print(f"[REDEEM] ✓ NegRiskAdapter approved as CTF operator")
+        return ok
+
+    # ── Simulation + Send ───────────────────────────────────────────────
+
+    def _simulate_and_send(self, target: str, call_data, condition_id: str, label: str) -> bool:
+        """Simulate inner call with eth_call, then build TX, sign, send, wait.
+
+        Simulation runs BEFORE nonce allocation — if it reverts, no gas is spent.
+        """
+        caller = self._get_token_holder()
+
+        # Step 1: Simulate the inner call (from the token holder, i.e. Safe)
+        try:
+            sim_data = call_data if isinstance(call_data, str) else ("0x" + call_data.hex())
+            self.w3.eth.call({
+                "from": caller,
+                "to": target,
+                "data": sim_data,
+            })
+            print(f"[REDEEM] {label}: simulation OK ✓")
+        except Exception as e:
+            err = str(e)
+            print(f"[REDEEM] {label}: simulation REVERTED — {err[:150]}")
+            print(f"[REDEEM] {label}: skipping TX to save gas")
+            return False
+
+        # Step 2: Build the actual on-chain TX (allocates nonce)
         if self.sig_type == 0:
-            tx = self._build_eoa_tx(target, redeem_data)
+            tx = self._build_eoa_tx(target, call_data)
         else:
-            tx = self._build_safe_tx(target, redeem_data)
+            tx = self._build_safe_tx(target, call_data)
 
         if not tx:
             return False
 
+        # Step 3: Sign and send
         try:
             signed = self.w3.eth.account.sign_transaction(tx, self.private_key)
             tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
@@ -248,13 +384,11 @@ class Redeemer:
             if self._nonce is not None:
                 self._nonce -= 1
             if "already known" in err_msg or "underpriced" in err_msg:
-                # TX with this nonce already in mempool — try to clear it now
                 stuck_nonce = tx.get("nonce", "?")
                 print(f"[REDEEM] {label}: nonce {stuck_nonce} blocked ({err_msg[:60]}), attempting cancel...")
                 self._cancel_single_nonce(stuck_nonce)
                 return False
             if "nonce too low" in err_msg:
-                # Nonce already used on-chain — resync
                 self._nonce = None
                 print(f"[REDEEM] {label}: nonce too low, resyncing")
                 return False
@@ -268,59 +402,88 @@ class Redeemer:
                 raise RuntimeError(f"gapped nonce: {err_msg[:60]}")
             raise
 
+        print(f"[REDEEM] {label}: TX sent {tx_hash.hex()[:16]}... waiting for confirmation...")
+
+        # Step 4: Wait for receipt
         try:
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-        except Exception as timeout_err:
-            # TX sent but not mined — it's stuck in mempool, don't proceed with more TXs
+        except Exception:
             print(f"[REDEEM] {label}: TX {tx_hash.hex()[:16]}... not confirmed in 60s — stuck in mempool")
-            # This nonce is consumed (TX is pending), but don't send more until it clears
             raise  # Let sweep_pending catch this and stop
 
         if receipt.status == 1:
             self._redeemed.add(condition_id)
-            print(f"[REDEEM] ✓ {label}: {condition_id[:16]}... tx={tx_hash.hex()[:16]}...")
+            gas_cost = receipt.gasUsed * tx.get("gasPrice", 0)
+            gas_matic = self.w3.from_wei(gas_cost, "ether")
+            print(f"[REDEEM] ✓ {label}: tx={tx_hash.hex()[:16]}... gas={receipt.gasUsed} ({gas_matic:.4f} MATIC)")
             return True
         else:
-            print(f"[REDEEM] ✗ {label} reverted: {condition_id[:16]}... (nonce used, trying next target)")
+            print(f"[REDEEM] ✗ {label} reverted on-chain (gas used: {receipt.gasUsed})")
             return False
 
-    def redeem(self, condition_id: str, neg_risk: bool = False) -> bool:
-        """Redeem positions for a resolved condition. Tries both CTF and NegRiskAdapter."""
-        if not self.enabled or not self.w3:
-            return False
+    # ── Redeem paths ────────────────────────────────────────────────────
 
-        if condition_id in self._redeemed:
+    def _redeem_ctf(self, slug: str, condition_id: str) -> bool:
+        """Redeem positions on the CTF contract (non-neg_risk markets)."""
+        cid_bytes = bytes.fromhex(condition_id.replace("0x", ""))
+        ctf = self.w3.eth.contract(address=CTF_ADDRESS, abi=CTF_ABI)
+        redeem_data = ctf.encode_abi(
+            "redeemPositions",
+            args=[USDC_ADDRESS, ZERO_BYTES32, cid_bytes, [1, 2]],
+        )
+        return self._simulate_and_send(CTF_ADDRESS, redeem_data, condition_id, f"CTF({slug})")
+
+    def _redeem_neg_risk(self, slug: str, condition_id: str, token_ids: list[str]) -> bool:
+        """Redeem positions through the NegRiskAdapter (neg_risk markets).
+
+        NegRiskAdapter.redeemPositions(bytes32 conditionId, uint256[] amounts)
+        - amounts = [yesTokenBalance, noTokenBalance] in base units
+        - Adapter pulls tokens from caller via safeBatchTransferFrom
+        - Requires CTF.isApprovedForAll(caller, NegRiskAdapter) == true
+        """
+        cid_bytes = bytes.fromhex(condition_id.replace("0x", ""))
+        holder = self._get_token_holder()
+
+        # Get token balances
+        amounts = self._get_token_balances(token_ids)
+        print(f"[REDEEM] NegRisk({slug}): holder={holder[:10]}... "
+              f"tokens={len(token_ids)} balances={amounts}")
+
+        if all(a == 0 for a in amounts):
+            print(f"[REDEEM] NegRisk({slug}): no token balances — already redeemed or no position")
+            self._redeemed.add(condition_id)
             return True
 
-        cid_bytes = bytes.fromhex(condition_id.replace("0x", ""))
+        # Ensure NegRiskAdapter is approved as CTF operator
+        if not self._check_neg_risk_approval():
+            print(f"[REDEEM] NegRisk({slug}): approval needed for NegRiskAdapter")
+            if not self._grant_neg_risk_approval():
+                print(f"[REDEEM] NegRisk({slug}): approval failed — cannot redeem")
+                return False
+            # Small delay after approval TX before redeem TX
+            time.sleep(3)
 
-        # Try preferred target first, then fallback to the other
-        targets = [
-            (NEG_RISK_ADAPTER, "NegRisk") if neg_risk else (CTF_ADDRESS, "CTF"),
-            (CTF_ADDRESS, "CTF") if neg_risk else (NEG_RISK_ADAPTER, "NegRisk"),
-        ]
+        # Build NegRiskAdapter.redeemPositions(conditionId, amounts)
+        adapter = self.w3.eth.contract(address=NEG_RISK_ADAPTER, abi=NEG_RISK_REDEEM_ABI)
+        redeem_data = adapter.encode_abi(
+            "redeemPositions",
+            args=[cid_bytes, amounts],
+        )
+        return self._simulate_and_send(NEG_RISK_ADAPTER, redeem_data, condition_id, f"NegRisk({slug})")
 
-        for target, label in targets:
-            try:
-                if self._try_redeem_target(condition_id, cid_bytes, target, label):
-                    return True
-            except Exception as e:
-                # TX timeout or critical error — don't try next target, it'll just pile up
-                print(f"[REDEEM] {label} failed: {type(e).__name__}: {str(e)[:60]}")
-                raise  # Let sweep_pending handle it and stop
+    # ── TX builders ─────────────────────────────────────────────────────
 
-        return False
-
-    def _build_eoa_tx(self, to: str, data: bytes) -> dict | None:
+    def _build_eoa_tx(self, to: str, data) -> dict | None:
         """Build a direct transaction from the signer."""
         try:
             nonce = self._get_nonce()
             gas_price = self.w3.eth.gas_price
+            call_data = data if isinstance(data, str) else ("0x" + data.hex())
             # 5x gas price (cap 500 gwei) — delegated accounts need high gas for inclusion
             tx = {
                 "to": to,
                 "value": 0,
-                "data": data,
+                "data": call_data,
                 "nonce": nonce,
                 "gas": 300_000,
                 "gasPrice": min(gas_price * 5, self.w3.to_wei(500, "gwei")),
@@ -331,7 +494,7 @@ class Redeemer:
             print(f"[REDEEM] EOA tx build failed: {e}")
             return None
 
-    def _build_safe_tx(self, to: str, data: bytes) -> dict | None:
+    def _build_safe_tx(self, to: str, data) -> dict | None:
         """Build an execTransaction call on the Gnosis Safe."""
         try:
             safe = self.w3.eth.contract(
@@ -348,12 +511,18 @@ class Redeemer:
             )
             signatures = bytes.fromhex(sig)
 
+            # Ensure call_data is bytes for Safe encoding
+            if isinstance(data, str):
+                call_bytes = bytes.fromhex(data[2:]) if data.startswith("0x") else bytes.fromhex(data)
+            else:
+                call_bytes = data
+
             exec_data = safe.encode_abi(
                 "execTransaction",
                 args=[
                     Web3.to_checksum_address(to),  # to
                     0,  # value
-                    bytes.fromhex(data[2:]) if isinstance(data, str) else data,  # data
+                    call_bytes,  # data
                     0,  # operation (CALL)
                     0,  # safeTxGas
                     0,  # baseGas
@@ -380,6 +549,8 @@ class Redeemer:
         except Exception as e:
             print(f"[REDEEM] Safe tx build failed: {e}")
             return None
+
+    # ── Queue and sweep ─────────────────────────────────────────────────
 
     def queue_redeem(self, slug: str, neg_risk: bool = False):
         """Queue a slug for redemption (will be retried by sweep loop)."""
@@ -456,7 +627,7 @@ class Redeemer:
 
         Compares pending vs confirmed nonce — if pending > confirmed, there are
         TXs sitting in the mempool that never got mined.  We send a 0-value TX
-        to ourselves at each stuck nonce with aggressive gas to replace them.
+        to a burn address at each stuck nonce with aggressive gas to replace them.
         Returns True if all stuck nonces were cleared (or none existed).
         """
         try:
@@ -474,7 +645,6 @@ class Redeemer:
               f"(confirmed nonce={confirmed}, pending nonce={pending})")
 
         # Replace each stuck nonce with a 0-value burn-addr transfer at high gas
-        # Uses burn addr (not self) + 100k gas to handle delegated/EIP-7702 accounts
         BURN_ADDR = Web3.to_checksum_address("0x000000000000000000000000000000000000dEaD")
         gas_price = self.w3.eth.gas_price
         replace_gas_price = min(gas_price * 5, self.w3.to_wei(300, "gwei"))
@@ -572,12 +742,22 @@ class Redeemer:
         if done or errors:
             print(f"[REDEEM] Sweep: {len(done)} redeemed, {errors} failed, {len(self._pending_slugs)} remaining")
 
-    def try_redeem_slug(self, slug: str, neg_risk: bool = False) -> bool:
-        """Try to redeem a resolved market by slug."""
-        cid = self.get_condition_id(slug)
-        if not cid:
-            print(f"[REDEEM] No conditionId for {slug}")
+    def try_redeem_slug(self, slug: str, neg_risk_hint: bool = False) -> bool:
+        """Try to redeem a resolved market by slug.
+
+        Fetches market data from Gamma API to get:
+        - conditionId (for the on-chain call)
+        - negRisk (to choose CTF vs NegRiskAdapter — overrides the queued hint)
+        - clobTokenIds (for ERC-1155 balance queries on neg_risk markets)
+        """
+        info = self.get_market_info(slug)
+        if not info:
+            print(f"[REDEEM] No market info for {slug}")
             return False
+
+        cid = info["condition_id"]
+        neg_risk = info["neg_risk"]  # use actual API value, not the queued hint
+        token_ids = info["token_ids"]
 
         if cid in self._redeemed:
             return True
@@ -586,4 +766,9 @@ class Redeemer:
             print(f"[REDEEM] Not yet resolved on-chain: {slug} (cid={cid[:16]}...)")
             return False
 
-        return self.redeem(cid, neg_risk)
+        print(f"[REDEEM] Attempting redeem: {slug} neg_risk={neg_risk} tokens={len(token_ids)}")
+
+        if neg_risk and token_ids:
+            return self._redeem_neg_risk(slug, cid, token_ids)
+        else:
+            return self._redeem_ctf(slug, cid)
