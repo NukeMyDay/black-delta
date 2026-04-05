@@ -1,0 +1,15 @@
+[Unit]
+Description=BLACK DELTA Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/black-delta/pulse
+ExecStart=/usr/bin/python3 dashboard.py --port 3000
+Restart=always
+RestartSec=5
+EnvironmentFile=/root/black-delta/pulse/.env
+
+[Install]
+WantedBy=multi-user.target
