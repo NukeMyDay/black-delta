@@ -149,6 +149,13 @@ def _compute_kelly_stake(entry_price: float, allocation: float) -> float:
     return round(allocation * fraction, 2)
 
 
+# Track which market slugs already have a follow position (one follow per market)
+_followed_slugs: dict[str, float] = {}  # slug → timestamp of follow
+_followed_slugs_lock = threading.Lock()
+
+_FOLLOW_SLUG_COOLDOWN = 600  # 10 min — don't re-follow same slug within this window
+
+
 def handle_follow_trade(trade_data: dict):
     """Callback when a followed user trades. Handles BUY (open) and SELL (close)."""
     # Kill switch check
@@ -172,13 +179,32 @@ def handle_follow_trade(trade_data: dict):
     if side != "BUY":
         return
 
+    # --- Deduplication: one follow per market slug ---
+    # Bonereaper places many trades on the same market; we only follow once.
+    now = time.time()
+    with _followed_slugs_lock:
+        # Cleanup expired entries
+        expired = [s for s, ts in _followed_slugs.items() if now - ts > _FOLLOW_SLUG_COOLDOWN]
+        for s in expired:
+            del _followed_slugs[s]
+
+        if event_slug in _followed_slugs:
+            return  # Already have a position on this market
+        _followed_slugs[event_slug] = now
+
     # --- BUY: open a new position ---
     # Capital allocation: follow gets (100 - signal_pct)% of betting capital
     follow_pct = 100 - state.signal_pct
     follow_allocation = state.betting_capital * (follow_pct / 100)
 
-    # Kelly-sized bet
-    stake = _compute_kelly_stake(price, follow_allocation)
+    # Kelly-sized bet on our actual fill price (not source price)
+    slippage = 0.05
+    max_price = min(price + slippage, 0.95)
+    tier_cap = 0.68 if price >= 0.55 else 0.62
+    if max_price > tier_cap:
+        max_price = tier_cap
+
+    stake = _compute_kelly_stake(max_price, follow_allocation)
     if stake < 0.50:
         return  # No edge or allocation too small
 
@@ -191,12 +217,6 @@ def handle_follow_trade(trade_data: dict):
         token_id = trade_data.get("asset", "")
         if token_id:
             stake = _executor.cap_amount(stake)
-            slippage = 0.10
-            max_price = min(price + slippage, 0.95)
-            # Tier-aware cap: full tier (<0.60) caps at 0.65, half tier (0.60-0.70) caps at 0.72
-            tier_cap = 0.72 if price >= 0.55 else 0.65
-            if max_price > tier_cap:
-                max_price = tier_cap
             if price > 0.70:
                 print(f"[FOLLOW] Entry ${price:.2f} > $0.70 — SKIP")
                 return
@@ -293,13 +313,27 @@ def _handle_signal(signal: dict):
     # Capital allocation: signal gets signal_pct% of betting capital
     signal_allocation = state.betting_capital * (state.signal_pct / 100)
 
-    # Kelly-sized bet using allocation
-    stake = _compute_kelly_stake(entry_price, signal_allocation)
-    if stake < 1.0:
-        return
-
     is_live = _executor and _executor.enabled and not state.sim_mode
     mode = "live" if is_live else "simulation"
+
+    # --- Compute actual fill price FIRST, then size Kelly on it ---
+    # Critical: Kelly must be on what WE pay, not Bonereaper's entry.
+    # Bonereaper enters at e.g. $0.52 but we fill at $0.57 due to slippage.
+    slippage = 0.05  # reduced from 0.10 — tighter entry for better EV
+    max_price = min(entry_price + slippage, 0.95)
+    # Tier-aware cap to prevent overpaying
+    tier_cap = 0.68 if entry_price >= 0.55 else 0.62
+    if max_price > tier_cap:
+        max_price = tier_cap
+    if max_price > 0.70:
+        print(f"[SIGNAL] Fill price ${max_price:.2f} > $0.70 — SKIP")
+        return
+
+    # Kelly-sized bet on our ACTUAL entry price (not Bonereaper's)
+    stake = _compute_kelly_stake(max_price, signal_allocation)
+    if stake < 1.0:
+        print(f"[SIGNAL] No Kelly edge at fill=${max_price:.2f} (src=${entry_price:.2f}) — SKIP")
+        return
 
     # Update the signal's suggested bet to match our capital model
     signal["suggested_bet_usd"] = stake
@@ -307,18 +341,8 @@ def _handle_signal(signal: dict):
     # --- Live execution: place real order with retry ---
     order_resp = None
     token_id = signal.get("token_id", "")
-    max_price = 0
     if is_live and _executor and token_id and stake >= 0.50:
         stake = _executor.cap_amount(stake)
-        slippage = 0.10
-        max_price = min(entry_price + slippage, 0.95)
-        # Tier-aware cap: full tier (<0.60) caps at 0.65, half tier (0.60-0.70) caps at 0.72
-        tier_cap = 0.72 if entry_price >= 0.55 else 0.65
-        if max_price > tier_cap:
-            max_price = tier_cap
-        if entry_price > 0.70:
-            print(f"[SIGNAL] Entry ${entry_price:.2f} > $0.70 — SKIP")
-            return
         market_info = _executor.get_market_info(token_id)
 
         # Retry FAK up to 5 times with 3s delay — market liquidity fluctuates

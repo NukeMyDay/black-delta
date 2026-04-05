@@ -248,8 +248,10 @@ class Redeemer:
             if self._nonce is not None:
                 self._nonce -= 1
             if "already known" in err_msg or "underpriced" in err_msg:
-                # TX with this nonce already in mempool — skip, will clear next sweep
-                print(f"[REDEEM] {label}: nonce conflict ({err_msg[:60]}), will retry next sweep")
+                # TX with this nonce already in mempool — try to clear it now
+                stuck_nonce = tx.get("nonce", "?")
+                print(f"[REDEEM] {label}: nonce {stuck_nonce} blocked ({err_msg[:60]}), attempting cancel...")
+                self._cancel_single_nonce(stuck_nonce)
                 return False
             if "nonce too low" in err_msg:
                 # Nonce already used on-chain — resync
@@ -388,6 +390,107 @@ class Redeemer:
                 continue
         return False
 
+    def _cancel_single_nonce(self, nonce: int) -> bool:
+        """Send a 0-value self-transfer to replace a stuck TX at a specific nonce."""
+        try:
+            gas_price = self.w3.eth.gas_price
+            replace_gas = min(gas_price * 10, self.w3.to_wei(500, "gwei"))
+            cancel_tx = {
+                "to": self.signer_address,
+                "value": 0,
+                "data": b"",
+                "nonce": nonce,
+                "gas": 21_000,
+                "gasPrice": replace_gas,
+                "chainId": 137,
+            }
+            signed = self.w3.eth.account.sign_transaction(cancel_tx, self.private_key)
+            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+            print(f"[REDEEM] Cancel TX for nonce {nonce}: {tx_hash.hex()[:16]}... (gasPrice={replace_gas})")
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=45)
+            if receipt.status == 1:
+                print(f"[REDEEM] ✓ Nonce {nonce} unblocked")
+                return True
+            else:
+                print(f"[REDEEM] ✗ Cancel TX reverted for nonce {nonce}")
+                return False
+        except Exception as e:
+            err = str(e)
+            if "nonce too low" in err:
+                print(f"[REDEEM] Nonce {nonce} already cleared on-chain")
+                return True
+            print(f"[REDEEM] Cancel nonce {nonce} failed: {err[:80]}")
+            return False
+
+    def _clear_stuck_nonces(self) -> bool:
+        """Detect and cancel stuck transactions blocking the nonce sequence.
+
+        Compares pending vs confirmed nonce — if pending > confirmed, there are
+        TXs sitting in the mempool that never got mined.  We send a 0-value TX
+        to ourselves at each stuck nonce with aggressive gas to replace them.
+        Returns True if all stuck nonces were cleared (or none existed).
+        """
+        try:
+            confirmed = self.w3.eth.get_transaction_count(self.signer_address, "latest")
+            pending = self.w3.eth.get_transaction_count(self.signer_address, "pending")
+        except Exception as e:
+            print(f"[REDEEM] Stuck-nonce check failed: {e}")
+            return False
+
+        stuck_count = pending - confirmed
+        if stuck_count <= 0:
+            return True  # nothing stuck
+
+        print(f"[REDEEM] Detected {stuck_count} stuck TX(s) in mempool "
+              f"(confirmed nonce={confirmed}, pending nonce={pending})")
+
+        # Replace each stuck nonce with a 0-value self-transfer at high gas
+        gas_price = self.w3.eth.gas_price
+        # Use 5x current gas price (capped at 300 gwei) to ensure replacement
+        replace_gas_price = min(gas_price * 5, self.w3.to_wei(300, "gwei"))
+
+        cleared = 0
+        for nonce in range(confirmed, pending):
+            try:
+                cancel_tx = {
+                    "to": self.signer_address,  # send to self
+                    "value": 0,
+                    "data": b"",
+                    "nonce": nonce,
+                    "gas": 21_000,  # minimum gas for simple transfer
+                    "gasPrice": replace_gas_price,
+                    "chainId": 137,
+                }
+                signed = self.w3.eth.account.sign_transaction(cancel_tx, self.private_key)
+                tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+                print(f"[REDEEM] Cancel TX sent for nonce {nonce}: {tx_hash.hex()[:16]}...")
+
+                # Wait for confirmation (up to 45s per TX)
+                receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=45)
+                if receipt.status == 1:
+                    cleared += 1
+                    print(f"[REDEEM] ✓ Nonce {nonce} cleared (gas used: {receipt.gasUsed})")
+                else:
+                    print(f"[REDEEM] ✗ Cancel TX reverted for nonce {nonce}")
+            except Exception as e:
+                err_msg = str(e)
+                if "nonce too low" in err_msg:
+                    # Already mined — that's fine
+                    cleared += 1
+                    print(f"[REDEEM] Nonce {nonce} already confirmed on-chain")
+                elif "already known" in err_msg:
+                    # Our replacement didn't outbid — try even higher gas next sweep
+                    print(f"[REDEEM] Nonce {nonce}: replacement still underpriced, will retry")
+                else:
+                    print(f"[REDEEM] Nonce {nonce} cancel failed: {err_msg[:80]}")
+
+        if cleared == stuck_count:
+            print(f"[REDEEM] All {stuck_count} stuck nonce(s) cleared — redeems unblocked")
+            return True
+        else:
+            print(f"[REDEEM] Cleared {cleared}/{stuck_count} stuck nonces — some still pending")
+            return cleared > 0
+
     def sweep_pending(self):
         """Try to redeem all queued slugs sequentially. Called periodically."""
         if not self.enabled or not self._pending_slugs:
@@ -395,6 +498,9 @@ class Redeemer:
         if not self._ensure_rpc():
             print(f"[REDEEM] Sweep: no RPC available ({len(self._pending_slugs)} slugs pending)")
             return
+
+        # Step 0: Clear any stuck mempool transactions before redeeming
+        self._clear_stuck_nonces()
 
         # Reset local nonce from chain at start of each sweep
         self._nonce = None
