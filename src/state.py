@@ -16,7 +16,7 @@ STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "follow_state
 class AppState:
     """Thread-safe state container for the app."""
 
-    def __init__(self, start_capital: float = 1000.0):
+    def __init__(self, start_capital: float = float(os.getenv("BASE_CAPITAL", "1000"))):
         self._lock = threading.Lock()
 
         # Capital config (persisted)
