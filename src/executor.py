@@ -254,12 +254,14 @@ class Executor:
         try:
             params = BalanceAllowanceParams(
                 asset_type=AssetType.COLLATERAL,
+                signature_type=2,
             )
             result = self.client.get_balance_allowance(params)
             if result and hasattr(result, "balance"):
                 return round(float(result.balance), 2)
             if isinstance(result, dict) and "balance" in result:
-                return round(float(result["balance"]), 2)
+                # Balance is in micro-USDC (6 decimals)
+                return round(float(result["balance"]) / 1e6, 2)
             if isinstance(result, (int, float)):
                 return round(float(result), 2)
         except Exception as e:
