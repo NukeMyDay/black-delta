@@ -950,16 +950,24 @@ function computeRangeStats(trades, cutoff) {
 function renderChart(d) {
   if (!pnlChart) return;
   const cutoff = getTimeCutoff(chartRange);
-  const fData = d.follow || {};
-  const curve = (fData.pnl_curve || []).filter(p => !cutoff || new Date(p.time).getTime() >= cutoff);
-  const startCap = (fData.capital || {}).start || 1000;
+  const baseCap = (d.capital || {}).base || 1000;
 
-  const points = curve.map(p => ({
-    x: new Date(p.time).getTime(),
-    y: (p.capital - startCap) / startCap * 100,
-  }));
+  // Live line: cumulative P&L from RESOLVED trades (not balance snapshots)
+  const allTrades = ((d.follow || {}).trades || [])
+    .filter(t => t.outcome !== 'pending' && t.time)
+    .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
 
-  pnlChart.data.datasets[0].data = points;
+  const filteredTrades = cutoff
+    ? allTrades.filter(t => new Date(t.time).getTime() >= cutoff)
+    : allTrades;
+
+  let cumPnl = 0;
+  const livePoints = filteredTrades.map(t => {
+    cumPnl += t.pnl_usd || 0;
+    return { x: new Date(t.time).getTime(), y: cumPnl / baseCap * 100 };
+  });
+
+  pnlChart.data.datasets[0].data = livePoints;
 
   // Signal sim curve (dataset[1])
   const sigData = d.signal || {};
@@ -971,18 +979,17 @@ function renderChart(d) {
   }));
   pnlChart.data.datasets[1].data = simPoints;
 
-  // Baseline at first visible point
-  const allPoints = [...points, ...simPoints];
-  const baseY = points.length ? points[0].y : 0;
+  // Baseline at 0%
+  const allPoints = [...livePoints, ...simPoints];
   const xs = allPoints.map(p => p.x);
   if (xs.length >= 2) {
-    pnlChart.data.datasets[2].data = [{ x: Math.min(...xs), y: baseY }, { x: Math.max(...xs), y: baseY }];
+    pnlChart.data.datasets[2].data = [{ x: Math.min(...xs), y: 0 }, { x: Math.max(...xs), y: 0 }];
   }
 
   // Auto-scale
   const ys = allPoints.map(p => p.y);
   if (ys.length) {
-    const mn = Math.min(...ys, baseY), mx = Math.max(...ys, baseY);
+    const mn = Math.min(...ys, 0), mx = Math.max(...ys, 0);
     const pad = Math.max((mx - mn) * 0.25, 1);
     pnlChart.options.scales.y.min = mn - pad;
     pnlChart.options.scales.y.max = mx + pad;
@@ -990,8 +997,8 @@ function renderChart(d) {
 
   pnlChart.update('none');
 
-  // Header value
-  const roi = points.length ? points[points.length - 1].y : 0;
+  // Header value = last live point (total resolved P&L %)
+  const roi = livePoints.length ? livePoints[livePoints.length - 1].y : 0;
   const valEl = document.getElementById('chart-value');
   valEl.textContent = `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`;
   valEl.style.color = roi >= 0 ? 'var(--green)' : 'var(--red)';
