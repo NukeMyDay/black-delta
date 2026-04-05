@@ -185,7 +185,7 @@ def handle_follow_trade(trade_data: dict):
     is_live = _executor and _executor.enabled and not state.sim_mode
     mode = "live" if is_live else "simulation"
 
-    # --- Live execution ---
+    # --- Live execution with retry ---
     order_resp = None
     if is_live and _executor:
         token_id = trade_data.get("asset", "")
@@ -201,14 +201,28 @@ def handle_follow_trade(trade_data: dict):
                 print(f"[FOLLOW] Entry ${price:.2f} > $0.70 — SKIP")
                 return
             market_info = _executor.get_market_info(token_id)
-            order_resp = _executor.place_market_buy(
-                token_id=token_id,
-                amount_usd=stake,
-                max_price=max_price,
-                neg_risk=market_info.get("neg_risk", False),
-                tick_size=market_info.get("tick_size", "0.01"),
-            )
+
+            # Retry FAK up to 5 times with 3s delay
+            max_retries = 5
+            retry_delay = 3
+            for attempt in range(1, max_retries + 1):
+                order_resp = _executor.place_market_buy(
+                    token_id=token_id,
+                    amount_usd=stake,
+                    max_price=max_price,
+                    neg_risk=market_info.get("neg_risk", False),
+                    tick_size=market_info.get("tick_size", "0.01"),
+                )
+                if order_resp:
+                    if attempt > 1:
+                        print(f"[FOLLOW] Order filled on attempt {attempt}/{max_retries}")
+                    break
+                if attempt < max_retries:
+                    print(f"[FOLLOW] FAK no fill (attempt {attempt}/{max_retries}), retry in {retry_delay}s...")
+                    time.sleep(retry_delay)
+
             if not order_resp:
+                print(f"[FOLLOW] All {max_retries} attempts failed — no fill at ${max_price:.2f}")
                 mode = "simulation"
         else:
             mode = "simulation"
@@ -290,9 +304,10 @@ def _handle_signal(signal: dict):
     # Update the signal's suggested bet to match our capital model
     signal["suggested_bet_usd"] = stake
 
-    # --- Live execution: place real order ---
+    # --- Live execution: place real order with retry ---
     order_resp = None
     token_id = signal.get("token_id", "")
+    max_price = 0
     if is_live and _executor and token_id and stake >= 0.50:
         stake = _executor.cap_amount(stake)
         slippage = 0.10
@@ -305,14 +320,28 @@ def _handle_signal(signal: dict):
             print(f"[SIGNAL] Entry ${entry_price:.2f} > $0.70 — SKIP")
             return
         market_info = _executor.get_market_info(token_id)
-        order_resp = _executor.place_market_buy(
-            token_id=token_id,
-            amount_usd=stake,
-            max_price=max_price,
-            neg_risk=market_info.get("neg_risk", False),
-            tick_size=market_info.get("tick_size", "0.01"),
-        )
+
+        # Retry FAK up to 5 times with 3s delay — market liquidity fluctuates
+        max_retries = 5
+        retry_delay = 3  # seconds
+        for attempt in range(1, max_retries + 1):
+            order_resp = _executor.place_market_buy(
+                token_id=token_id,
+                amount_usd=stake,
+                max_price=max_price,
+                neg_risk=market_info.get("neg_risk", False),
+                tick_size=market_info.get("tick_size", "0.01"),
+            )
+            if order_resp:
+                if attempt > 1:
+                    print(f"[SIGNAL] Order filled on attempt {attempt}/{max_retries}")
+                break
+            if attempt < max_retries:
+                print(f"[SIGNAL] FAK no fill (attempt {attempt}/{max_retries}), retry in {retry_delay}s...")
+                time.sleep(retry_delay)
+
         if not order_resp:
+            print(f"[SIGNAL] All {max_retries} attempts failed — no fill at ${max_price:.2f}")
             mode = "simulation"
     elif is_live and not token_id:
         mode = "simulation"
