@@ -259,14 +259,13 @@ class Redeemer:
                 print(f"[REDEEM] {label}: nonce too low, resyncing")
                 return False
             if "in-flight transaction limit" in err_msg or "delegated" in err_msg:
-                print(f"[REDEEM] {label}: delegated account limit — pause 30s")
-                time.sleep(30)
+                print(f"[REDEEM] {label}: delegated account limit — abort sweep")
                 self._nonce = None
-                return False
+                raise RuntimeError(f"delegated account limit: {err_msg[:60]}")
             if "gapped-nonce" in err_msg:
-                print(f"[REDEEM] {label}: gapped nonce — resyncing")
+                print(f"[REDEEM] {label}: gapped nonce — abort sweep")
                 self._nonce = None
-                return False
+                raise RuntimeError(f"gapped nonce: {err_msg[:60]}")
             raise
 
         try:
@@ -306,7 +305,9 @@ class Redeemer:
                 if self._try_redeem_target(condition_id, cid_bytes, target, label):
                     return True
             except Exception as e:
-                print(f"[REDEEM] {label} failed: {e}")
+                # TX timeout or critical error — don't try next target, it'll just pile up
+                print(f"[REDEEM] {label} failed: {type(e).__name__}: {str(e)[:60]}")
+                raise  # Let sweep_pending handle it and stop
 
         return False
 
@@ -315,13 +316,14 @@ class Redeemer:
         try:
             nonce = self._get_nonce()
             gas_price = self.w3.eth.gas_price
+            # 5x gas price (cap 500 gwei) — delegated accounts need high gas for inclusion
             tx = {
                 "to": to,
                 "value": 0,
                 "data": data,
                 "nonce": nonce,
-                "gas": 200_000,
-                "gasPrice": min(gas_price * 2, self.w3.to_wei(100, "gwei")),
+                "gas": 300_000,
+                "gasPrice": min(gas_price * 5, self.w3.to_wei(500, "gwei")),
                 "chainId": 137,
             }
             return tx
@@ -364,13 +366,14 @@ class Redeemer:
 
             nonce = self._get_nonce()
             gas_price = self.w3.eth.gas_price
+            # 5x gas price (cap 500 gwei) — delegated accounts need high gas for inclusion
             tx = {
                 "to": self.funder_address,
                 "value": 0,
                 "data": exec_data,
                 "nonce": nonce,
-                "gas": 300_000,
-                "gasPrice": min(gas_price * 2, self.w3.to_wei(100, "gwei")),
+                "gas": 500_000,
+                "gasPrice": min(gas_price * 5, self.w3.to_wei(500, "gwei")),
                 "chainId": 137,
             }
             return tx
@@ -539,8 +542,8 @@ class Redeemer:
         self._nonce = None
 
         slugs = list(self._pending_slugs.items())
-        # Only try a few per sweep to avoid in-flight limits on delegated accounts
-        max_per_sweep = 3
+        # Delegated accounts only allow 1 in-flight TX — try 1 slug per sweep
+        max_per_sweep = 1
         batch = slugs[:max_per_sweep]
         print(f"[REDEEM] Sweep: trying {len(batch)}/{len(slugs)} pending slugs...")
         done = []
