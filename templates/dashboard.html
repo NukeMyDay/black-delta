@@ -846,7 +846,7 @@ function renderPositions(positions) {
       ? `<div class="pos-countdown" style="font-size:13px;color:var(--orange);letter-spacing:0.5px">VALIDATING</div>`
       : `<div class="pos-countdown">${mm}:${ss}</div>`;
     return `<div class="pos-card">
-      <div class="pos-dir ${p.direction}">${p.direction.toUpperCase()}</div>
+      <div class="pos-dir">${p.direction.toUpperCase()}</div>
       ${countdownHtml}
       <div class="pos-meta">$${Number(p.stake).toFixed(2)} @ $${Number(p.entry_price).toFixed(2)} · ${p.strategy}</div>
     </div>`;
@@ -969,7 +969,7 @@ function renderTrades(follow) {
     const time = t.time ? new Date(t.time).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
     const slug = (t.event_slug || t.slug || '').replace(/^(btc|eth)-\w+-\d+m-/i, (m) => m.split('-').slice(0,2).join(' ').toUpperCase() + ' ');
     const dir = t.direction || '';
-    const dirClass = dir === 'up' ? 'win' : dir === 'down' ? 'lose' : '';
+    const dirClass = '';
     const outcome = t.outcome || 'pending';
     const outcomeClass = outcome === 'win' || outcome === 'closed' ? 'win' : outcome === 'lose' ? 'lose' : 'pending';
     const pnl = t.pnl_usd || 0;
