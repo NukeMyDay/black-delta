@@ -274,41 +274,55 @@ def _handle_signal(signal: dict):
 
     # --- Live execution: place real order ---
     order_resp = None
-    if is_live and _executor:
-        # Need token_id — get from signal's window data
-        win = _signal._windows.get(slug) if _signal else None
-        token_id = ""
-        if win:
-            # Find the dominant token from accumulated trades
-            for t in reversed(win.trades):
-                if t.get("asset"):
-                    token_id = t["asset"]
-                    break
-
-        if token_id and stake >= 0.50:
-            stake = _executor.cap_amount(stake)
-            slippage = 0.03
-            max_price = min(entry_price + slippage, 0.95)
-            market_info = _executor.get_market_info(token_id)
-            order_resp = _executor.place_market_buy(
-                token_id=token_id,
-                amount_usd=stake,
-                max_price=max_price,
-                neg_risk=market_info.get("neg_risk", False),
-                tick_size=market_info.get("tick_size", "0.01"),
-            )
-            if not order_resp:
-                mode = "simulation"
-        else:
+    token_id = signal.get("token_id", "")
+    if is_live and _executor and token_id and stake >= 0.50:
+        stake = _executor.cap_amount(stake)
+        slippage = 0.03
+        max_price = min(entry_price + slippage, 0.95)
+        market_info = _executor.get_market_info(token_id)
+        order_resp = _executor.place_market_buy(
+            token_id=token_id,
+            amount_usd=stake,
+            max_price=max_price,
+            neg_risk=market_info.get("neg_risk", False),
+            tick_size=market_info.get("tick_size", "0.01"),
+        )
+        if not order_resp:
             mode = "simulation"
+    elif is_live and not token_id:
+        mode = "simulation"
 
     bias = signal.get("bias", 0)
-    trades = signal.get("trade_count", 0)
+    trade_count = signal.get("trade_count", 0)
 
     tag = "LIVE" if mode == "live" else "SIM"
     print(f"[SIGNAL] [{tag}] BET {direction} on {slug} "
           f"(entry=${entry_price:.2f} [{entry_tier}], "
-          f"bet=${stake:.2f}, bias={bias:.0%}, {trades} trades)")
+          f"bet=${stake:.2f}, bias={bias:.0%}, {trade_count} trades)")
+
+    # Record bet to state so it appears in the Bets tab
+    payout_multiplier = round(1.0 / entry_price, 2) if entry_price > 0 else 0
+    bet_record = {
+        "event_slug": slug,
+        "direction": direction.lower(),
+        "contract_price": entry_price,
+        "payout_multiplier": payout_multiplier,
+        "stake_usd": stake,
+        "strategy": "signal",
+        "source_wallet": "signal",
+        "source_name": "Signal",
+        "slug": slug,
+        "title": slug,
+        "outcome": "pending",
+        "pnl_usd": 0,
+        "bet_placed": True,
+        "mode": mode,
+        "order_id": (order_resp or {}).get("orderID"),
+        "entry_tier": entry_tier,
+        "bias": round(bias, 4),
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+    state.record_follow_trade(bet_record)
 
 
 # ==================================================================

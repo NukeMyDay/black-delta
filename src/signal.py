@@ -64,6 +64,7 @@ class WindowAccumulator:
         "bet_emitted", "signal_direction",
         "direction_flipped", "skip_reason",
         "latency_samples",
+        "up_asset", "down_asset",
     )
 
     def __init__(self, slug: str):
@@ -84,6 +85,8 @@ class WindowAccumulator:
         self.direction_flipped: bool = False
         self.skip_reason: str | None = None  # "flip", "entry_high", "bias_low"
         self.latency_samples: list[float] = []
+        self.up_asset: str = ""    # token_id for UP outcome
+        self.down_asset: str = ""  # token_id for DOWN outcome
 
     @property
     def signal_emitted(self) -> bool:
@@ -118,9 +121,13 @@ class WindowAccumulator:
         if outcome == "up":
             self.up_usdc += usdc
             self.up_shares += shares
+            if not self.up_asset:
+                self.up_asset = trade.get("asset", "")
         elif outcome == "down":
             self.down_usdc += usdc
             self.down_shares += shares
+            if not self.down_asset:
+                self.down_asset = trade.get("asset", "")
         else:
             return
 
@@ -419,10 +426,13 @@ class SignalAggregator:
               f"bet=${suggested_bet_usd:.2f}, bias={bias:.0%}, "
               f"{win.trade_count} trades, {win.window_elapsed:.0f}s)")
 
+        token_id = win.up_asset if direction == "up" else win.down_asset
+
         return {
             "slug": win.slug,
             "event_slug": win.slug,  # compatible with PULSE
             "direction": direction,
+            "token_id": token_id,
             "confidence": confidence,
             "bias": round(bias, 4),
             "avg_entry_price": round(avg_entry_price, 4),

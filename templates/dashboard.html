@@ -453,20 +453,20 @@ input[type="range"]::-webkit-slider-thumb {
 
   <!-- Tabs -->
   <div class="tabs">
-    <button class="tab-btn active" onclick="switchTab('trades')">Trades</button>
+    <button class="tab-btn active" onclick="switchTab('trades')">Bets</button>
     <button class="tab-btn" onclick="switchTab('signal')">Signal</button>
     <button class="tab-btn" onclick="switchTab('follow')">Follow</button>
     <button class="tab-btn" onclick="switchTab('investors')">Investors</button>
   </div>
 
-  <!-- Tab: Trades -->
+  <!-- Tab: Bets -->
   <div class="tab-content active" id="tab-trades">
     <div class="card-label" style="margin-bottom:var(--spacing-sm)">Open Positions</div>
     <div class="positions-grid" id="positions-grid"></div>
     <div id="no-positions" style="text-align:center;color:var(--text-dim);padding:20px;font-size:12px">No open positions</div>
 
     <div style="display:flex;align-items:center;gap:12px;margin:var(--spacing-md) 0 var(--spacing-sm)">
-      <div class="card-label" style="margin:0">Trade History</div>
+      <div class="card-label" style="margin:0">Bet History</div>
       <span style="margin-left:auto;display:flex;gap:6px">
         <a href="/api/follow/export?format=csv" download style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim);text-decoration:none">CSV</a>
         <a href="/api/follow/export?format=json" download style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim);text-decoration:none">JSON</a>
@@ -480,7 +480,7 @@ input[type="range"]::-webkit-slider-thumb {
         <tbody id="trades-body"></tbody>
       </table>
     </div>
-    <div id="no-trades" style="text-align:center;color:var(--text-dim);padding:30px;font-size:12px">No trades yet</div>
+    <div id="no-trades" style="text-align:center;color:var(--text-dim);padding:30px;font-size:12px">No bets yet</div>
     <div id="show-more-wrap" style="text-align:center;padding:12px;display:none">
       <button onclick="showMoreTrades()" style="background:none;border:1px solid var(--border);color:var(--text-dim);padding:6px 16px;border-radius:6px;cursor:pointer;font-size:11px">Show more</button>
     </div>
@@ -880,7 +880,7 @@ function renderChart(d) {
 }
 
 // ============================================================
-//  Trade History (Trades tab)
+//  Bet History (Bets tab)
 // ============================================================
 function renderTrades(follow) {
   const trades = (follow || {}).trades || [];
