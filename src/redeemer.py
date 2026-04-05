@@ -516,14 +516,14 @@ class Redeemer:
             nonce = self._get_nonce()
             gas_price = self.w3.eth.gas_price
             call_data = data if isinstance(data, str) else ("0x" + data.hex())
-            # 5x gas price (cap 500 gwei) — delegated accounts need high gas for inclusion
+            # 1.5x gas price (cap 50 gwei) — enough for Polygon inclusion
             tx = {
                 "to": to,
                 "value": 0,
                 "data": call_data,
                 "nonce": nonce,
                 "gas": 300_000,
-                "gasPrice": min(gas_price * 5, self.w3.to_wei(500, "gwei")),
+                "gasPrice": min(gas_price * 3 // 2, self.w3.to_wei(50, "gwei")),
                 "chainId": 137,
             }
             return tx
@@ -572,14 +572,14 @@ class Redeemer:
 
             nonce = self._get_nonce()
             gas_price = self.w3.eth.gas_price
-            # 5x gas price (cap 500 gwei) — delegated accounts need high gas for inclusion
+            # 1.5x gas price (cap 50 gwei) — enough for Polygon inclusion
             tx = {
                 "to": self.funder_address,
                 "value": 0,
                 "data": exec_data,
                 "nonce": nonce,
                 "gas": 500_000,
-                "gasPrice": min(gas_price * 5, self.w3.to_wei(500, "gwei")),
+                "gasPrice": min(gas_price * 3 // 2, self.w3.to_wei(50, "gwei")),
                 "chainId": 137,
             }
             return tx
