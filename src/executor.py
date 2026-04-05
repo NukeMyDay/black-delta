@@ -34,7 +34,7 @@ class Executor:
 
         # Safety guards (all env-configurable)
         self.max_bet_usd = float(os.getenv("EXEC_MAX_BET", "50"))
-        self.daily_loss_limit = float(os.getenv("EXEC_DAILY_LOSS_LIMIT", "100"))
+        # daily_loss_limit removed — loss protection is now at state level via betting_capital_fixed
         self.kill_switch = False
 
         # Daily tracking
@@ -273,14 +273,6 @@ class Executor:
             self._daily_volume = 0.0
             self._daily_reset_date = today
 
-        if self._daily_loss >= self.daily_loss_limit:
-            print(
-                f"[EXEC] Daily loss limit ${self.daily_loss_limit:.2f} "
-                f"reached — activating kill switch"
-            )
-            self.kill_switch = True
-            return False
-
         return True
 
     def cap_amount(self, amount_usd: float) -> float:
@@ -288,15 +280,8 @@ class Executor:
         return min(amount_usd, self.max_bet_usd)
 
     def record_loss(self, amount: float):
-        """Track a realized loss against the daily limit."""
+        """Track a realized loss for daily stats."""
         self._daily_loss += abs(amount)
-        if self._daily_loss >= self.daily_loss_limit:
-            print(
-                f"[EXEC] Daily loss limit reached "
-                f"(${self._daily_loss:.2f}/{self.daily_loss_limit:.2f}) "
-                f"— activating kill switch"
-            )
-            self.kill_switch = True
 
     def reset_kill_switch(self):
         """Manual reset of kill switch (from dashboard)."""
@@ -362,7 +347,7 @@ class Executor:
             "enabled": self.enabled,
             "kill_switch": self.kill_switch,
             "max_bet_usd": self.max_bet_usd,
-            "daily_loss_limit": self.daily_loss_limit,
+            "daily_loss_today": round(self._daily_loss, 2),
             "daily_loss": round(self._daily_loss, 2),
             "daily_bets": self._daily_bets,
             "daily_volume": round(self._daily_volume, 2),

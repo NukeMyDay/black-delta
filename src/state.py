@@ -24,9 +24,8 @@ class AppState:
         self.polymarket_balance: float | None = None  # live balance from Polymarket API
         self.betting_capital_fixed: float | None = None  # absolute $ override (None = use Polymarket balance)
         self.risk_level = 5         # 1-10, maps to Kelly fraction
-        self.signal_pct = 100       # 0-100
-        self.daily_loss_limit_pct = 10  # % of betting capital
         self.kill_switch = True     # Paused by default — must be activated manually
+        self.pause_reason: str | None = None  # human-readable reason if auto-paused
         self.sim_mode = False       # Sim: record bets but don't place real orders
 
         # Investors (friends only — owner is not listed)
@@ -129,6 +128,37 @@ class AppState:
         if self._peak_capital <= 0:
             return 0
         return round((1 - current / self._peak_capital) * 100, 2) if current < self._peak_capital else 0
+
+    def check_loss_limit(self) -> bool:
+        """Auto-pause if losses have consumed the full betting capital.
+
+        Example: $1600 balance, $1000 betting capital set →
+        floor = $1600 - $1000 = $600. If portfolio drops to $600 → pause.
+
+        Returns True if system was paused by this check.
+        """
+        if self.betting_capital_fixed is None:
+            return False  # auto-mode, no fixed limit to enforce
+        if not self.polymarket_balance:
+            return False
+        if self.kill_switch:
+            return False  # already paused
+
+        # Floor = starting balance when capital was set, minus the fixed amount
+        # Approximation: use peak as reference for "what we started with"
+        floor = self._peak_capital - self.betting_capital_fixed
+        portfolio = self.portfolio_value
+
+        if portfolio <= floor:
+            self.kill_switch = True
+            self.pause_reason = (
+                f"Loss limit reached: portfolio ${portfolio:.2f} hit floor "
+                f"${floor:.2f} (peak ${self._peak_capital:.2f} - "
+                f"${self.betting_capital_fixed:.0f} betting capital)"
+            )
+            print(f"[RISK] AUTO-PAUSE: {self.pause_reason}")
+            return True
+        return False
 
     # ------------------------------------------------------------------
     #  Daily stats
@@ -494,8 +524,6 @@ class AppState:
                 "base_capital": self.base_capital,
                 "betting_capital_fixed": self.betting_capital_fixed,
                 "risk_level": self.risk_level,
-                "signal_pct": self.signal_pct,
-                "daily_loss_limit_pct": self.daily_loss_limit_pct,
                 "peak_capital": self._peak_capital,
                 "start_of_day_balance": self._start_of_day_balance,
                 "kill_switch": self.kill_switch,
@@ -543,8 +571,6 @@ class AppState:
                 # Migrate from old reinvest_rate: ignore, just leave as None
                 self.betting_capital_fixed = None
             self.risk_level = data.get("risk_level", self.risk_level)
-            self.signal_pct = data.get("signal_pct", self.signal_pct)
-            self.daily_loss_limit_pct = data.get("daily_loss_limit_pct", self.daily_loss_limit_pct)
             self._peak_capital = max(data.get("peak_capital", self._peak_capital), self.base_capital)
             self._start_of_day_balance = data.get("start_of_day_balance", self._start_of_day_balance)
             if "kill_switch" in data:

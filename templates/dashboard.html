@@ -138,7 +138,7 @@ body {
    ============================================================ */
 .capital-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: var(--spacing-sm);
   margin-bottom: var(--spacing-md);
 }
@@ -302,7 +302,7 @@ body {
   white-space: nowrap;
 }
 .data-table tbody td {
-  padding: 6px;
+  padding: 10px 6px;
   border-bottom: 1px solid var(--border);
   font-family: var(--mono);
   font-size: 11px;
@@ -339,33 +339,68 @@ body {
    ============================================================ */
 .positions-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--spacing-sm);
   margin-bottom: var(--spacing-md);
 }
 .pos-card {
   background: var(--surface);
-  border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 10px 12px;
+  padding: 14px 16px;
+  position: relative;
 }
-.pos-dir {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
+.pos-card.win-border { border: 1px solid var(--green); }
+.pos-card.lose-border { border: 1px solid var(--red); }
+.pos-card.pending-border { border: 1px solid var(--border); }
+.pos-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
 }
-.pos-dir.up { color: var(--green); }
-.pos-dir.down { color: var(--red); }
-.pos-countdown {
+.pos-slug {
   font-family: var(--mono);
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--text);
 }
-.pos-meta {
+.pos-badge {
   font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.pos-badge.bet { background: var(--green); color: #000; }
+.pos-badge.validating { background: var(--orange); color: #000; }
+.pos-badge.pending { background: rgba(255,255,255,0.1); color: var(--text-dim); }
+.pos-dir-big {
+  font-size: 20px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+.pos-dir-big.up { color: var(--green); }
+.pos-dir-big.down { color: var(--red); }
+.pos-progress {
+  height: 4px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 2px;
+  margin: 10px 0;
+  overflow: hidden;
+}
+.pos-progress-bar {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 1s linear;
+}
+.pos-stats {
+  display: flex;
+  gap: 16px;
+  font-size: 11px;
   color: var(--text-dim);
 }
+.pos-stats strong { color: var(--text); font-weight: 600; }
 
 /* ============================================================
    Responsive
@@ -414,14 +449,19 @@ body {
       <div class="card-sub" id="profit-sub">All time</div>
     </div>
     <div class="card">
-      <div class="card-label" id="winrate-label">Win Rate</div>
-      <div class="card-value" id="cap-winrate">--</div>
-      <div class="card-sub" id="winrate-sub">0W / 0 bets</div>
+      <div class="card-label">Full Tier</div>
+      <div class="card-value" id="wr-full">--</div>
+      <div class="card-sub" id="wr-full-sub">0W / 0 · $0</div>
     </div>
     <div class="card">
-      <div class="card-label">Max Drawdown</div>
-      <div class="card-value" id="max-dd">0%</div>
-      <div class="card-sub" id="pending-count">0 open</div>
+      <div class="card-label">Half Tier</div>
+      <div class="card-value" id="wr-half">--</div>
+      <div class="card-sub" id="wr-half-sub">0W / 0 · $0</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Open</div>
+      <div class="card-value" id="pending-count">0</div>
+      <div class="card-sub" id="pause-reason" style="color:var(--red)"></div>
     </div>
   </div>
 
@@ -439,20 +479,6 @@ body {
       <div class="ctrl-input-row">
         <input type="number" class="ctrl-input" id="capital-input" min="0" step="50" placeholder="auto" onchange="onCapitalChange(this.value)">
         <span class="ctrl-unit">$ <span id="capital-mode" style="color:var(--text-dim);font-size:10px"></span></span>
-      </div>
-    </div>
-    <div class="control-group">
-      <div class="control-label">Signal Allocation</div>
-      <div class="ctrl-input-row">
-        <input type="number" class="ctrl-input" id="mix-input" min="0" max="100" value="100" onchange="onMixChange(this.value)">
-        <span class="ctrl-unit">% Signal &nbsp;<span id="mix-label" style="color:var(--text-dim);font-size:10px">/ 0% Follow</span></span>
-      </div>
-    </div>
-    <div class="control-group">
-      <div class="control-label">Daily Loss Limit</div>
-      <div class="ctrl-input-row">
-        <input type="number" class="ctrl-input" id="loss-input" min="1" max="90" value="10" onchange="onLossLimitChange(this.value)">
-        <span class="ctrl-unit">% &nbsp;<span id="loss-label" style="color:var(--text-dim);font-size:10px">($0)</span></span>
       </div>
     </div>
   </div>
@@ -478,8 +504,6 @@ body {
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('trades')">Bets</button>
-    <button class="tab-btn" onclick="switchTab('signal')">Signal</button>
-    <button class="tab-btn" onclick="switchTab('follow')">Follow</button>
     <button class="tab-btn" onclick="switchTab('investors')">Investors</button>
   </div>
 
@@ -499,7 +523,7 @@ body {
     <div class="table-scroll">
       <table class="data-table" id="trades-table">
         <thead><tr>
-          <th>Time</th><th>Market</th><th>Dir</th><th>Entry</th><th>Stake</th><th>Outcome</th><th>P&L</th><th>Strategy</th>
+          <th>Time</th><th>Market</th><th>Dir</th><th>Src</th><th>Fill</th><th>Tier</th><th>Bias</th><th>Stake</th><th>Payout</th><th>Outcome</th><th>P&L</th>
         </tr></thead>
         <tbody id="trades-body"></tbody>
       </table>
@@ -510,113 +534,6 @@ body {
     </div>
   </div>
 
-  <!-- Tab: Signal -->
-  <div class="tab-content" id="tab-signal">
-    <div class="explainer">
-      <h3>Signal Strategy</h3>
-      The Signal strategy analyzes <strong>Bonereaper's trading patterns</strong> within each 5-minute window.
-      Instead of copying every trade, it aggregates his activity to detect a dominant direction, then applies
-      <strong>Kelly criterion</strong> sizing based on the entry price tier.<br><br>
-      <strong>How it works:</strong><br>
-      1. <strong>Scout</strong> (30s / 8 trades) — detect the dominant direction early<br>
-      2. <strong>Flip Check</strong> (90s / 15+ trades) — if direction changed since scout, skip (unreliable)<br>
-      3. <strong>Kelly Bet</strong> — size the bet based on entry price (cheaper = higher payout, riskier)
-    </div>
-
-    <div class="capital-grid" id="signal-kpi-grid" style="margin-bottom:var(--spacing-md)">
-      <div class="card">
-        <div class="card-label">Win Rate</div>
-        <div class="card-value" id="signal-wr">--</div>
-      </div>
-      <div class="card">
-        <div class="card-label">ROI (Sim)</div>
-        <div class="card-value" id="signal-roi">--</div>
-      </div>
-      <div class="card">
-        <div class="card-label">Resolved</div>
-        <div class="card-value" id="signal-resolved">0</div>
-      </div>
-      <div class="card">
-        <div class="card-label">Pending</div>
-        <div class="card-value" id="signal-pending">0</div>
-      </div>
-    </div>
-
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:var(--spacing-sm)">
-      <div class="card-label" style="margin:0">Signal History</div>
-      <span id="signal-stats" style="font-size:11px;color:var(--text-dim)"></span>
-      <span style="margin-left:auto;display:flex;gap:6px">
-        <a href="/api/signal/download?format=csv" download style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim);text-decoration:none">CSV</a>
-        <a href="/api/signal/download?format=json" download style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim);text-decoration:none">JSON</a>
-      </span>
-    </div>
-    <div class="table-scroll">
-      <table class="data-table">
-        <thead><tr>
-          <th>Time</th><th>Market</th><th>Dir</th><th>Entry</th><th>Tier</th><th>Outcome</th><th>P&L</th><th>Bet</th><th>Bias</th>
-        </tr></thead>
-        <tbody id="signal-body"></tbody>
-      </table>
-    </div>
-    <div id="no-signals" style="text-align:center;color:var(--text-dim);padding:30px;font-size:12px">No signals yet</div>
-  </div>
-
-  <!-- Tab: Follow -->
-  <div class="tab-content" id="tab-follow">
-    <div class="explainer">
-      <h3>Follow Strategy</h3>
-      The Follow strategy <strong>copies every individual trade</strong> from Bonereaper in real-time
-      via the Polymarket RTDS WebSocket feed. Each copied trade is sized using the same
-      <strong>Kelly criterion</strong> and capital allocation as the Signal strategy, ensuring consistent
-      risk management across both approaches.<br><br>
-      <strong>Key difference from Signal:</strong> Follow copies <em>all</em> trades (higher volume, lower win rate),
-      while Signal only bets on filtered, high-confidence windows.
-    </div>
-
-    <div class="card-label" style="margin-bottom:var(--spacing-sm)">Followed Wallets</div>
-    <div class="table-scroll">
-      <table class="data-table">
-        <thead><tr><th>Label</th><th>Address</th><th>Buys</th><th>Sells</th><th></th></tr></thead>
-        <tbody id="wallets-body"></tbody>
-      </table>
-    </div>
-    <div style="display:flex;gap:8px;margin-top:var(--spacing-sm);align-items:end;flex-wrap:wrap">
-      <div style="flex:1;min-width:100px">
-        <div class="card-label">Wallet Address</div>
-        <input type="text" id="wallet-addr" placeholder="0x..."
-          style="width:100%;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:11px">
-      </div>
-      <div style="width:100px">
-        <div class="card-label">Label</div>
-        <input type="text" id="wallet-label" placeholder="Name"
-          style="width:100%;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font);font-size:12px">
-      </div>
-      <button onclick="addWallet()" style="padding:6px 14px;background:var(--accent);color:#000;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">+ Add</button>
-    </div>
-
-    <div style="display:flex;align-items:center;gap:12px;margin:var(--spacing-lg) 0 var(--spacing-sm)">
-      <div class="card-label" style="margin:0">Follow Stats</div>
-      <span id="follow-stats" style="font-size:11px;color:var(--text-dim)"></span>
-    </div>
-    <div class="capital-grid" id="follow-kpi-grid" style="margin-bottom:var(--spacing-md)">
-      <div class="card">
-        <div class="card-label">Win Rate</div>
-        <div class="card-value" id="follow-wr">--</div>
-      </div>
-      <div class="card">
-        <div class="card-label">ROI</div>
-        <div class="card-value" id="follow-roi">--</div>
-      </div>
-      <div class="card">
-        <div class="card-label">Resolved</div>
-        <div class="card-value" id="follow-resolved">0</div>
-      </div>
-      <div class="card">
-        <div class="card-label">Pending</div>
-        <div class="card-value" id="follow-pending">0</div>
-      </div>
-    </div>
-  </div>
 
   <!-- Tab: Investors -->
   <div class="tab-content" id="tab-investors">
@@ -717,17 +634,32 @@ function render(d) {
   profitEl.style.color = rangeProfit >= 0 ? 'var(--green)' : 'var(--red)';
   setText('profit-sub', rangeLabels[chartRange] || 'All time');
 
-  // Win Rate (filtered by chart range)
-  const wrEl = document.getElementById('cap-winrate');
-  wrEl.textContent = rangeStats.resolved > 0 ? rangeStats.wr + '%' : '--';
-  wrEl.style.color = rangeStats.wr >= 50 ? 'var(--green)' : rangeStats.resolved > 0 ? 'var(--red)' : 'var(--text)';
-  setText('winrate-sub', `${rangeStats.wins}W / ${rangeStats.resolved} bets`);
+  // Performance by tier (Full / Half) — Win Rate + P&L
+  const allBets = ((d.follow || {}).trades || []).filter(t => t.outcome !== 'pending' && t.bet_placed);
+  const filtBets = cutoff ? allBets.filter(t => t.time && new Date(t.time).getTime() >= cutoff) : allBets;
+  const tierStats = { full: {w:0,t:0,pnl:0}, half: {w:0,t:0,pnl:0} };
+  for (const t of filtBets) {
+    const tier = (t.entry_tier || '').toLowerCase().includes('half') ? 'half' : 'full';
+    tierStats[tier].t++;
+    tierStats[tier].pnl += t.pnl_usd || 0;
+    if (t.outcome === 'win' || (t.outcome === 'closed' && (t.pnl_usd||0) >= 0)) tierStats[tier].w++;
+  }
+  for (const [key, s] of Object.entries(tierStats)) {
+    const el = document.getElementById(`wr-${key}`);
+    const wr = s.t > 0 ? Math.round(s.w / s.t * 100) : 0;
+    if (el) {
+      el.textContent = s.t > 0 ? wr + '%' : '--';
+      el.style.color = s.t > 0 ? (wr >= 50 ? 'var(--green)' : 'var(--red)') : 'var(--text)';
+    }
+    const pnlStr = s.pnl >= 0 ? '+$' + fmt(s.pnl) : '-$' + fmt(Math.abs(s.pnl));
+    const pnlColor = s.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const subEl = document.getElementById(`wr-${key}-sub`);
+    if (subEl) subEl.innerHTML = `${s.w}W / ${s.t} · <span style="color:${pnlColor}">${pnlStr}</span>`;
+  }
 
-  // Drawdown
-  setText('max-dd', cap.max_drawdown > 0 ? `-${cap.max_drawdown}%` : '0%');
-  document.getElementById('max-dd').style.color = cap.max_drawdown > 2 ? 'var(--red)' : 'var(--text)';
+  // Open positions count
   const pendingCount = (d.open_positions || []).length;
-  setText('pending-count', `${pendingCount} open`);
+  setText('pending-count', pendingCount);
 
   // Config sync (don't override while user is focused)
   const cfg = d.config;
@@ -746,11 +678,13 @@ function render(d) {
   const capMode = d.capital?.capital_mode === 'fixed' ? 'fixed' : `live $${fmt(d.capital?.betting || 0)}`;
   setText('capital-mode', capMode);
 
-  syncInput('mix-input', cfg.signal_pct);
-  syncInput('loss-input', cfg.daily_loss_limit_pct || 10);
   updateRiskLabel(cfg.risk_level);
-  setText('mix-label', `/ ${cfg.follow_pct}% Follow`);
-  setText('loss-label', `($${fmt(cfg.daily_loss_limit_usd || 0)})`);
+
+  // Pause reason (auto-pause info)
+  const pauseEl = document.getElementById('pause-reason');
+  if (pauseEl) {
+    pauseEl.textContent = cfg.pause_reason || '';
+  }
 
   // Trading mode button (3 states)
   updateModeBtn(cfg.kill_switch, cfg.sim_mode);
@@ -767,12 +701,6 @@ function render(d) {
 
   // Trade history
   renderTrades(d.follow);
-
-  // Signal tab
-  renderSignals(d.signal);
-
-  // Follow tab
-  renderFollow(d);
 
   // Investors tab
   renderInvestors(d.investors);
@@ -828,17 +756,6 @@ function onCapitalChange(v) {
     sendConfig({ betting_capital_fixed: v });
   }
 }
-function onMixChange(v) {
-  v = Math.max(0, Math.min(100, +v));
-  document.getElementById('mix-input').value = v;
-  setText('mix-label', `/ ${100-v}% Follow`);
-  sendConfig({ signal_pct: v });
-}
-function onLossLimitChange(v) {
-  v = Math.max(1, Math.min(90, +v));
-  document.getElementById('loss-input').value = v;
-  sendConfig({ daily_loss_limit_pct: v });
-}
 function updateModeBtn(kill_switch, sim_mode) {
   const btns = ['btn-active','btn-sim','btn-paused'];
   btns.forEach(id => {
@@ -878,15 +795,58 @@ function renderPositions(positions) {
   none.style.display = 'none';
   grid.innerHTML = positions.slice(0, 12).map(p => {
     const expired = p.countdown_s <= 0;
+    const dir = (p.direction || '').toUpperCase();
+    const dirClass = dir === 'UP' ? 'up' : 'down';
+
+    // Badge
+    let badge;
+    if (expired) {
+      badge = '<span class="pos-badge validating">VALIDATING</span>';
+    } else {
+      badge = `<span class="pos-badge bet">${dir} BET</span>`;
+    }
+
+    // Progress bar (elapsed / total window)
+    const totalWindow = (p.elapsed_s || 0) + (p.countdown_s || 0);
+    const pct = totalWindow > 0 ? Math.min(100, Math.round((p.elapsed_s || 0) / totalWindow * 100)) : 0;
+    const barColor = dir === 'UP' ? 'var(--green)' : 'var(--red)';
+
+    // Countdown
     const mm = Math.floor(p.countdown_s / 60);
     const ss = String(p.countdown_s % 60).padStart(2, '0');
-    const countdownHtml = expired
-      ? `<div class="pos-countdown" style="font-size:13px;color:var(--orange);letter-spacing:0.5px">VALIDATING</div>`
-      : `<div class="pos-countdown">${mm}:${ss}</div>`;
-    return `<div class="pos-card">
-      <div class="pos-dir">${p.direction.toUpperCase()}</div>
-      ${countdownHtml}
-      <div class="pos-meta">$${Number(p.stake).toFixed(2)} @ $${Number(p.entry_price).toFixed(2)} · ${p.strategy}</div>
+    const elapsed_mm = Math.floor((p.elapsed_s || 0) / 60);
+    const elapsed_ss = String((p.elapsed_s || 0) % 60).padStart(2, '0');
+
+    // Slug display
+    const slug = (p.slug || '').split('-').slice(0, 2).join(' ').toUpperCase();
+    const slugFull = p.slug || '';
+
+    // Stats
+    const bias = p.bias != null ? Math.round(p.bias * 100) + '%' : '--';
+    const wr = p.win_rate != null ? Math.round(p.win_rate * 100) + '%' : '--';
+    const tier = p.entry_tier || '--';
+    const payout = p.payout_multiplier ? p.payout_multiplier.toFixed(1) + 'x' : '--';
+
+    const borderClass = expired ? 'pending-border' : (dir === 'UP' ? 'win-border' : 'lose-border');
+
+    return `<div class="pos-card ${borderClass}">
+      <div class="pos-header">
+        <span class="pos-slug">${slug} &nbsp;<span style="color:var(--text-dim);font-weight:400;font-size:10px">${slugFull.split('-').slice(2).join('-')}</span></span>
+        ${badge}
+      </div>
+      <div class="pos-dir-big ${dirClass}">${dir} &nbsp;<span style="font-size:14px;color:var(--text-dim);font-weight:400">${bias}</span></div>
+      <div class="pos-progress"><div class="pos-progress-bar" style="width:${pct}%;background:${barColor}"></div></div>
+      <div class="pos-stats">
+        <span>Entry <strong>$${Number(p.fill_price || p.entry_price || 0).toFixed(2)}</strong></span>
+        <span>Stake <strong>$${Number(p.stake || 0).toFixed(2)}</strong></span>
+        <span>Payout <strong>${payout}</strong></span>
+        <span>Tier <strong>${tier}</strong></span>
+      </div>
+      <div class="pos-stats" style="margin-top:4px">
+        <span>${elapsed_mm}:${elapsed_ss}s in</span>
+        <span>${expired ? 'Validating...' : mm + ':' + ss + ' left'}</span>
+        <span>WR <strong>${wr}</strong></span>
+      </div>
     </div>`;
   }).join('');
 }
@@ -904,8 +864,8 @@ function initChart() {
   pnlChart = new Chart(ctx, {
     type: 'line',
     data: { datasets: [
-      mk('Live', '#4ade80', [], 2),
-      mk('Signal (sim)', 'rgba(255,255,255,0.35)', [], 1),
+      mk('Capital', '#4ade80', [], 2),
+      mk('Trend', 'rgba(74,222,128,0.35)', [6,4], 1),
       mk('Baseline', 'rgba(255,255,255,0.2)', [6,4], 1),
     ]},
     options: {
@@ -999,18 +959,24 @@ function renderChart(d) {
 
   pnlChart.data.datasets[0].data = livePoints;
 
-  // Signal sim curve (dataset[1])
-  const sigData = d.signal || {};
-  const sigCurve = (sigData.pnl_curve || []).filter(p => !cutoff || new Date(p.time).getTime() >= cutoff);
-  const sigStart = sigCurve.length ? sigCurve[0].capital : 1000;
-  const simPoints = sigCurve.map(p => ({
-    x: new Date(p.time).getTime(),
-    y: (p.capital - sigStart) / sigStart * 100,
-  }));
-  pnlChart.data.datasets[1].data = simPoints;
+  // Trend line (linear regression of live points)
+  if (livePoints.length >= 2) {
+    const n = livePoints.length;
+    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    for (const p of livePoints) { sumX += p.x; sumY += p.y; sumXY += p.x * p.y; sumXX += p.x * p.x; }
+    const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+    const intercept = (sumY - slope * sumX) / n;
+    const x0 = livePoints[0].x, x1 = livePoints[n - 1].x;
+    pnlChart.data.datasets[1].data = [
+      { x: x0, y: slope * x0 + intercept },
+      { x: x1, y: slope * x1 + intercept },
+    ];
+  } else {
+    pnlChart.data.datasets[1].data = [];
+  }
 
   // Baseline at 0%
-  const allPoints = [...livePoints, ...simPoints];
+  const allPoints = livePoints;
   const xs = allPoints.map(p => p.x);
   if (xs.length >= 2) {
     pnlChart.data.datasets[2].data = [{ x: Math.min(...xs), y: 0 }, { x: Math.max(...xs), y: 0 }];
@@ -1050,139 +1016,36 @@ function renderTrades(follow) {
 
   tbody.innerHTML = bets.slice(0, tradesShown).map(t => {
     const time = t.time ? new Date(t.time).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
-    const slug = (t.event_slug || t.slug || '').replace(/^(btc|eth)-\w+-\d+m-/i, (m) => m.split('-').slice(0,2).join(' ').toUpperCase() + ' ');
-    const dir = t.direction || '';
-    const dirClass = '';
+    const market = (t.event_slug || t.slug || '').split('-').slice(0, 2).join(' ').toUpperCase();
+    const dir = (t.direction || '').toUpperCase();
+    const dirColor = dir === 'UP' ? 'var(--green)' : dir === 'DOWN' ? 'var(--red)' : 'var(--text)';
+    const srcEntry = t.source_entry ? '$' + Number(t.source_entry).toFixed(2) : '--';
+    const fillPrice = '$' + Number(t.fill_price || t.contract_price || 0).toFixed(2);
+    const tier = t.entry_tier || '--';
+    const bias = t.bias != null ? Math.round(t.bias * 100) + '%' : '--';
+    const payout = t.payout_multiplier ? t.payout_multiplier.toFixed(1) + 'x' : '--';
     const outcome = t.outcome || 'pending';
     const outcomeClass = outcome === 'win' || outcome === 'closed' ? 'win' : outcome === 'lose' ? 'lose' : 'pending';
     const pnl = t.pnl_usd || 0;
     const pnlStr = outcome === 'pending' ? '--' : (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
     const pnlClass = pnl >= 0 ? 'win' : 'lose';
-    const strategy = t.strategy || 'follow';
     return `<tr>
       <td>${time}</td>
-      <td>${slug}</td>
-      <td class="${dirClass}">${dir.toUpperCase()}</td>
-      <td>$${Number(t.contract_price || 0).toFixed(2)}</td>
+      <td>${market}</td>
+      <td style="color:${dirColor};font-weight:600">${dir}</td>
+      <td style="color:var(--text-dim)">${srcEntry}</td>
+      <td>${fillPrice}</td>
+      <td><span style="font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(255,255,255,0.06)">${tier}</span></td>
+      <td>${bias}</td>
       <td>$${Number(t.stake_usd || 0).toFixed(2)}</td>
+      <td>${payout}</td>
       <td class="${outcomeClass}">${outcome.toUpperCase()}</td>
       <td class="${outcome === 'pending' ? 'pending' : pnlClass}">${pnlStr}</td>
-      <td style="color:var(--text-dim)">${strategy}</td>
     </tr>`;
   }).join('');
 }
 
 function showMoreTrades() { tradesShown += 30; if (lastData) renderTrades(lastData.follow); }
-
-// ============================================================
-//  Signal Tab
-// ============================================================
-function renderSignals(sig) {
-  if (!sig || !sig.signals) return;
-  const signals = sig.signals || [];
-  const stats = sig.stats || {};
-  const tbody = document.getElementById('signal-body');
-  const noEl = document.getElementById('no-signals');
-
-  // KPI cards
-  const resolved = (stats.total_resolved || 0);
-  const correct = stats.correct || 0;
-  const wrong = stats.wrong || 0;
-  const pending = signals.filter(s => s.outcome === 'pending').length;
-  const wr = resolved > 0 ? Math.round(correct / resolved * 100) : 0;
-  setText('signal-wr', resolved > 0 ? wr + '%' : '--');
-  const roiEl = document.getElementById('signal-roi');
-  const roiPct = stats.roi_pct || 0;
-  roiEl.textContent = (roiPct >= 0 ? '+' : '') + roiPct.toFixed(2) + '%';
-  roiEl.style.color = roiPct >= 0 ? 'var(--green)' : 'var(--red)';
-  setText('signal-resolved', resolved);
-  setText('signal-pending', pending);
-
-  setText('signal-stats', `${signals.length} signals | ${stats.total_scouts || 0} scouts | ${stats.total_flips || 0} flips`);
-
-  if (!signals.length) { tbody.innerHTML = ''; noEl.style.display = 'block'; return; }
-  noEl.style.display = 'none';
-
-  tbody.innerHTML = signals.slice(0, 50).map(s => {
-    const time = s.time ? new Date(s.time).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
-    const dir = s.direction || '';
-    const outcome = s.outcome || 'pending';
-    const outcomeClass = (outcome === 'win' || outcome === 'correct') ? 'win' : (outcome === 'lose' || outcome === 'wrong') ? 'lose' : 'pending';
-    const pnl = s.sim_pnl || 0;
-    const pnlStr = outcome === 'pending' ? '--' : (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
-    return `<tr>
-      <td>${time}</td>
-      <td>${(s.slug || '').split('-').slice(0,2).join(' ').toUpperCase()}</td>
-      <td>${dir.toUpperCase()}</td>
-      <td>$${Number(s.avg_entry_price || 0).toFixed(2)}</td>
-      <td>${s.entry_tier || ''}</td>
-      <td class="${outcomeClass}">${outcome.toUpperCase()}</td>
-      <td class="${pnl >= 0 ? 'win' : 'lose'}">${pnlStr}</td>
-      <td>$${Number(s.suggested_bet_usd || 0).toFixed(0)}</td>
-      <td>${Math.round((s.bias || 0) * 100)}%</td>
-    </tr>`;
-  }).join('');
-}
-
-// ============================================================
-//  Follow Tab
-// ============================================================
-function renderFollow(d) {
-  const fData = d.follow || {};
-  const stats = fData.stats || {};
-  const cap = fData.capital || {};
-
-  setText('follow-stats', `${stats.total_bets || 0} total bets | ${stats.total_sells || 0} sells`);
-
-  const resolved = (stats.wins || 0) + (stats.losses || 0);
-  setText('follow-wr', resolved > 0 ? stats.win_rate + '%' : '--');
-  const roiEl = document.getElementById('follow-roi');
-  const roiPct = cap.pnl_pct || 0;
-  roiEl.textContent = (roiPct >= 0 ? '+' : '') + roiPct.toFixed(2) + '%';
-  roiEl.style.color = roiPct >= 0 ? 'var(--green)' : 'var(--red)';
-  setText('follow-resolved', resolved);
-  setText('follow-pending', stats.pending || 0);
-
-  // Wallets
-  const feed = d.feed || {};
-  const wallets = feed.wallets || [];
-  const wb = document.getElementById('wallets-body');
-  wb.innerHTML = wallets.map(w => `<tr>
-    <td>${w.label || 'Unknown'}</td>
-    <td style="font-size:10px">${w.address.slice(0,6)}...${w.address.slice(-4)}</td>
-    <td>${w.buys || 0}</td>
-    <td>${w.sells || 0}</td>
-    <td><button onclick="removeWallet('${w.address}')" style="background:none;border:1px solid var(--border);color:var(--text-dim);padding:2px 6px;border-radius:3px;cursor:pointer;font-size:10px">x</button></td>
-  </tr>`).join('');
-}
-
-async function addWallet() {
-  const address = document.getElementById('wallet-addr').value.trim();
-  const label = document.getElementById('wallet-label').value.trim();
-  if (!address || !address.startsWith('0x')) return alert('Enter a valid wallet address (0x...)');
-  const resp = await fetch('/api/follow/wallets', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ address, label: label || 'Unknown' })
-  });
-  const data = await resp.json();
-  if (data.error) { alert(data.error); return; }
-  document.getElementById('wallet-addr').value = '';
-  document.getElementById('wallet-label').value = '';
-  poll();
-}
-
-async function removeWallet(address) {
-  if (!confirm('Remove this wallet?')) return;
-  const resp = await fetch('/api/follow/wallets', {
-    method: 'DELETE',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ address })
-  });
-  const data = await resp.json();
-  if (data.error) alert(data.error);
-  poll();
-}
 
 // ============================================================
 //  Investors Tab

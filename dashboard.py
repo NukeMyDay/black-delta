@@ -195,9 +195,8 @@ def handle_follow_trade(trade_data: dict):
     # --- BUY: open a new position ---
     from src.signal import WIN_RATE_FULL, ENTRY_FULL, SLIPPAGE
 
-    # Capital allocation: follow gets (100 - signal_pct)% of betting capital
-    follow_pct = 100 - state.signal_pct
-    follow_allocation = state.betting_capital * (follow_pct / 100)
+    # Capital allocation: follow gets remaining % (signal = 100%)
+    follow_allocation = 0  # follow disabled, all capital to signal
 
     # Kelly on fill price — same logic as signals, single gatekeeper
     max_price = min(price + SLIPPAGE, 0.95)
@@ -321,8 +320,8 @@ def _handle_signal(signal: dict):
     entry_tier = signal.get("entry_tier", "?")
     window_remaining = signal.get("window_remaining_s", 0)
 
-    # Capital allocation
-    signal_allocation = state.betting_capital * (state.signal_pct / 100)
+    # Capital allocation (100% signal)
+    signal_allocation = state.betting_capital
 
     is_live = _executor and _executor.enabled and not state.sim_mode
     mode = "live" if is_live else "simulation"
@@ -494,8 +493,6 @@ def _sync_executor_limits():
         return
     # Max bet = 1 full Kelly fraction of capital (actual bets are much smaller via ⅛-Kelly)
     _executor.max_bet_usd = round(state.betting_capital * state.kelly_fraction, 2)
-    # Daily loss limit = configured % of capital
-    _executor.daily_loss_limit = round(state.betting_capital * state.daily_loss_limit_pct / 100, 2)
 
 
 def _redeem_sweep_loop(interval: int = 120):
@@ -533,6 +530,8 @@ def _balance_sync_loop(interval: int = 60):
                         "capital": round(portfolio, 2),
                         "pnl": round(portfolio - state.base_capital, 2),
                     })
+                    # Check loss limit (auto-pause if betting capital exhausted)
+                    state.check_loss_limit()
                     # Re-sync executor limits with updated capital
                     _sync_executor_limits()
         except Exception as e:
@@ -576,12 +575,9 @@ async def api_dashboard():
         "risk_level": state.risk_level,
         "kelly_fraction": round(state.kelly_fraction, 4),
         "betting_capital_fixed": state.betting_capital_fixed,
-        "signal_pct": state.signal_pct,
-        "follow_pct": 100 - state.signal_pct,
         "kill_switch": state.kill_switch,
+        "pause_reason": state.pause_reason,
         "sim_mode": state.sim_mode,
-        "daily_loss_limit_pct": state.daily_loss_limit_pct,
-        "daily_loss_limit_usd": round(state.betting_capital * state.daily_loss_limit_pct / 100, 2),
     }
 
     # Daily summary — from resolved bets only (not affected by deposits)
@@ -612,13 +608,21 @@ async def api_dashboard():
                 remaining = (window_start + window_dur) - now
             except (ValueError, IndexError):
                 remaining = 0
+            elapsed = now - window_start if window_start else 0
             open_positions.append({
                 "slug": slug,
                 "direction": t.get("direction"),
                 "stake": t.get("stake_usd"),
                 "entry_price": t.get("contract_price"),
+                "source_entry": t.get("source_entry"),
+                "fill_price": t.get("fill_price") or t.get("contract_price"),
+                "payout_multiplier": t.get("payout_multiplier"),
                 "strategy": t.get("strategy", "follow"),
+                "entry_tier": t.get("entry_tier", ""),
+                "win_rate": t.get("win_rate"),
+                "bias": t.get("bias"),
                 "countdown_s": max(0, round(remaining)),
+                "elapsed_s": round(elapsed),
                 "time": t.get("time"),
             })
 
@@ -664,22 +668,20 @@ async def api_update_config(request: Request):
             state.betting_capital_fixed = None  # use live balance
         else:
             state.betting_capital_fixed = max(10, float(val))  # min $10
-    if "signal_pct" in body:
-        state.signal_pct = max(0, min(100, float(body["signal_pct"])))
     if "kill_switch" in body:
-        state.kill_switch = bool(body["kill_switch"])
+        new_val = bool(body["kill_switch"])
+        state.kill_switch = new_val
+        if not new_val:
+            state.pause_reason = None  # clear auto-pause reason on manual resume
     if "sim_mode" in body:
         state.sim_mode = bool(body["sim_mode"])
-    if "daily_loss_limit_pct" in body:
-        state.daily_loss_limit_pct = max(1, min(90, float(body["daily_loss_limit_pct"])))
 
-    # Re-sync all executor limits whenever risk or loss limit changes
+    # Re-sync executor limits
     _sync_executor_limits()
 
     # Update signal module's capital if available
     if _signal:
-        sig_alloc = state.betting_capital * (state.signal_pct / 100)
-        _signal.sim_capital = sig_alloc
+        _signal.sim_capital = state.betting_capital
 
     return JSONResponse({
         "ok": True,
@@ -687,9 +689,8 @@ async def api_update_config(request: Request):
             "risk_level": state.risk_level,
             "kelly_fraction": round(state.kelly_fraction, 4),
             "betting_capital_fixed": state.betting_capital_fixed,
-            "signal_pct": state.signal_pct,
-            "follow_pct": 100 - state.signal_pct,
             "kill_switch": state.kill_switch,
+            "pause_reason": state.pause_reason,
             "betting_capital": round(state.betting_capital, 2),
         }
     })
@@ -898,8 +899,7 @@ def main():
     _signal = signal_agg
     signal_agg.on_signal = _handle_signal
     # Set signal capital from state
-    sig_alloc = state.betting_capital * (state.signal_pct / 100)
-    signal_agg.sim_capital = sig_alloc
+    signal_agg.sim_capital = state.betting_capital
 
     # --- Resolution + State Saver + Balance Sync + Redeem Sweep ---
     threading.Thread(target=_resolution_loop, daemon=True).start()
@@ -942,9 +942,8 @@ def main():
             state.polymarket_balance = balance
             state._peak_capital = max(state._peak_capital, balance)
             print(f"  Polymarket Balance: ${balance:.2f}")
-        # Sync dynamic limits (max_bet and daily_loss_limit) from capital + risk level
         _sync_executor_limits()
-        print(f"  Max bet: ${executor.max_bet_usd:.2f} | Daily loss limit: ${executor.daily_loss_limit:.2f}")
+        print(f"  Max bet: ${executor.max_bet_usd:.2f}")
 
         # --- Auto-Redeemer ---
         redeemer = Redeemer()
@@ -962,7 +961,10 @@ def main():
     print(f"\n  BLACK DELTA")
     print(f"  Capital: ${state.betting_capital:.2f} | Risk: {state.risk_level}/10 | "
           f"Kelly: {state.kelly_fraction:.1%}")
-    print(f"  Strategy: Signal {state.signal_pct}% / Follow {100 - state.signal_pct}%")
+    if state.betting_capital_fixed:
+        print(f"  Loss limit: ${state.betting_capital_fixed:.0f} "
+              f"(auto-pause at ${state._peak_capital - state.betting_capital_fixed:.0f})")
+    print(f"  Strategy: Signal 100%")
     print(f"  Wallets: {len(follow_feed.wallets)}")
     print(f"  http://localhost:{args.port}\n")
 
