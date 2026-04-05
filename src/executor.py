@@ -50,6 +50,19 @@ class Executor:
         # Market info cache: {token_id: {tick_size, neg_risk}}
         self._market_cache: dict[str, dict] = {}
 
+    SIG_LABELS = {0: "EOA", 1: "POLY_PROXY", 2: "POLY_GNOSIS_SAFE"}
+
+    def _build_client(self, private_key, creds, sig_type, funder):
+        """Build a ClobClient with the given signature type."""
+        return ClobClient(
+            host="https://clob.polymarket.com",
+            chain_id=137,
+            key=private_key,
+            creds=creds,
+            signature_type=sig_type,
+            funder=funder,
+        )
+
     def initialize(self) -> bool:
         """Initialize the CLOB client from env vars. Returns True if ready."""
         private_key = os.getenv("POLY_PRIVATE_KEY")
@@ -62,35 +75,54 @@ class Executor:
             print("[EXEC] Missing POLY_* credentials in .env — executor disabled")
             return False
 
-        # Auto-detect signature type:
-        # - If POLY_FUNDER_ADDRESS is set → GNOSIS_SAFE (2), proxy wallet flow
-        # - If not set → EOA (0), direct wallet signing
-        sig_type = 2 if funder else 0
-        sig_label = "GNOSIS_SAFE" if sig_type == 2 else "EOA"
-
         try:
             creds = ApiCreds(
                 api_key=api_key,
                 api_secret=api_secret,
                 api_passphrase=api_passphrase,
             )
-            self.client = ClobClient(
-                host="https://clob.polymarket.com",
-                chain_id=137,
-                key=private_key,
-                creds=creds,
-                signature_type=sig_type,
-                funder=funder,
-            )
-            # Verify credentials with a lightweight call
-            self.client.get_api_keys()
+
+            # Auto-detect signature type by checking which returns a balance.
+            # Order: POLY_PROXY (1, most common) → GNOSIS_SAFE (2) → EOA (0)
+            sig_types = [1, 2, 0]
+            working_sig = None
+
+            for st in sig_types:
+                try:
+                    client = self._build_client(private_key, creds, st, funder)
+                    client.get_api_keys()
+                    params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                    result = client.get_balance_allowance(params)
+                    bal = None
+                    if result and hasattr(result, "balance"):
+                        bal = float(result.balance)
+                    elif isinstance(result, dict) and "balance" in result:
+                        bal = float(result["balance"]) / 1e6
+                    if bal is not None and bal > 0:
+                        working_sig = st
+                        self.client = client
+                        print(f"[EXEC] sig_type={st} ({self.SIG_LABELS[st]}) → balance=${bal:.2f} ✓")
+                        break
+                    else:
+                        print(f"[EXEC] sig_type={st} ({self.SIG_LABELS[st]}) → balance=$0 (skip)")
+                except Exception as e:
+                    print(f"[EXEC] sig_type={st} ({self.SIG_LABELS[st]}) → error: {e}")
+
+            if working_sig is None:
+                # Fallback: use POLY_PROXY with funder, or EOA without
+                fallback = 1 if funder else 0
+                self.client = self._build_client(private_key, creds, fallback, funder)
+                self.client.get_api_keys()
+                working_sig = fallback
+                print(f"[EXEC] No balance detected, falling back to sig_type={fallback}")
+
             self.enabled = True
             signer_addr = self.client.signer.address()
             funder_addr = self.client.builder.funder
             print(f"[EXEC] Executor initialized — LIVE trading enabled")
             print(f"[EXEC]   Signer:  {signer_addr}")
             print(f"[EXEC]   Funder:  {funder_addr}")
-            print(f"[EXEC]   SigType: {sig_type} ({sig_label})")
+            print(f"[EXEC]   SigType: {working_sig} ({self.SIG_LABELS[working_sig]})")
             return True
         except Exception as e:
             print(f"[EXEC] Initialization failed: {e}")
