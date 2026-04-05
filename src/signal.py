@@ -6,20 +6,22 @@ trades from monitored wallets into a per-window directional signal.
 
 Flow:
   RTDS trade -> SignalAggregator.ingest(trade) -> per-window accumulator
-  Scout (30s / 8 trades) -> Direction Flip Check (90s / 15+ trades) -> Bet
+  Scout (30s / 8 trades) -> Direction Flip Check (60s / 15+ trades) -> Bet
 
 Designed for wallets like Bonereaper that trade BOTH sides simultaneously
 and build directional positions over time within each 5-min window.
 
-Strategy (Scout + Flip Detection + Entry-Price Sizing):
+Strategy:
   1. Scout at 30s / 8 trades: record dominant direction (internal, no bet)
-  2. At 90s / 15+ trades: check if direction flipped since scout
+  2. At 60s / 15+ trades: check if direction flipped since scout
      - If flipped -> suppress signal (bias was unstable)
-     - If stable -> compute entry price, size bet accordingly
-  3. Entry-price-based Kelly sizing:
-     - avg_entry < 0.45: full ⅛-Kelly (best EV, contrarian)
-     - 0.45 <= avg_entry < 0.55: half ⅛-Kelly (moderate EV)
-     - avg_entry >= 0.55: skip (edge evaporates after slippage)
+     - If stable -> emit signal with direction, entry price, window remaining
+  3. Two-tier win rate model (validated from 289 sim signals, 2026-04-05):
+     - Bonereaper entry < $0.55: 62% accuracy ("value" — contrarian entries)
+     - Bonereaper entry $0.55-$0.70: 76% accuracy ("momentum" — confirmed trend)
+     - Bonereaper entry >= $0.70: skip (too late, minimal payout)
+  4. Kelly on FILL price (entry + slippage) is the sole gatekeeper.
+     No additional caps or hard filters needed — Kelly math handles it.
 
   Result: 1 signal per window max. Direction flips = no bet.
 """
@@ -30,22 +32,27 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
-# --- Bet Sizing (all overridable via .env) ---
-# Separate win rates per tier (empirical from 47 signals):
-#   Full tier (entry < 0.45): 57% accuracy — contrarian bets, best EV
-#   Half tier (0.45-0.55):    75% accuracy — moderate conviction
-#   Skip (>= 0.55):          No bet — edge evaporates after slippage
-WIN_RATE_FULL = float(os.getenv("SIGNAL_WIN_RATE_FULL", "0.57"))
-WIN_RATE_HALF = float(os.getenv("SIGNAL_WIN_RATE_HALF", "0.75"))
-KELLY_SAFETY = float(os.getenv("SIGNAL_KELLY_FRACTION", "0.125"))  # ⅛-Kelly (conservative for €1k)
-ENTRY_FULL = float(os.getenv("SIGNAL_ENTRY_FULL", "0.60"))
-ENTRY_HALF = float(os.getenv("SIGNAL_ENTRY_HALF", "0.70"))
+# ── Signal Parameters (single source of truth) ─────────────────────
+#
+# Win rates validated from Pulse simulation (289 resolved signals):
+#   Full tier: 61.8% (94/152)  →  use 0.62
+#   Half tier: 75.9% (104/137) →  use 0.76
+#
+WIN_RATE_FULL = float(os.getenv("SIGNAL_WIN_RATE_FULL", "0.62"))
+WIN_RATE_HALF = float(os.getenv("SIGNAL_WIN_RATE_HALF", "0.76"))
+KELLY_FRACTION = float(os.getenv("SIGNAL_KELLY_FRACTION", "0.125"))  # ⅛-Kelly
+ENTRY_FULL = float(os.getenv("SIGNAL_ENTRY_FULL", "0.55"))  # below: full Kelly
+ENTRY_HALF = float(os.getenv("SIGNAL_ENTRY_HALF", "0.70"))  # below: half Kelly, above: skip
+SLIPPAGE = float(os.getenv("SIGNAL_SLIPPAGE", "0.05"))      # max above Bonereaper's entry
 SIM_START_CAPITAL = float(os.getenv("SIGNAL_START_CAPITAL", "1000.0"))
 
-# --- Scout + Bet Thresholds ---
+# Keep old name as alias for backward compat
+KELLY_SAFETY = KELLY_FRACTION
+
+# ── Scout + Bet Thresholds ──────────────────────────────────────────
 SCOUT_MIN_ELAPSED = int(os.getenv("SIGNAL_SCOUT_MIN_ELAPSED", "30"))
 SCOUT_MIN_TRADES = int(os.getenv("SIGNAL_SCOUT_MIN_TRADES", "8"))
-BET_MIN_ELAPSED = int(os.getenv("SIGNAL_BET_MIN_ELAPSED", "90"))
+BET_MIN_ELAPSED = int(os.getenv("SIGNAL_BET_MIN_ELAPSED", "60"))  # 60s (was 90)
 BET_MIN_TRADES = int(os.getenv("SIGNAL_BET_MIN_TRADES", "15"))
 
 
@@ -460,10 +467,10 @@ class SignalAggregator:
         """Compute bet size using Kelly with tier-specific win rates.
 
         Returns (entry_tier, bet_pct, bet_usd).
-        Each tier uses its own empirical win rate for Kelly calculation:
-          "full"  (entry < 0.45): WIN_RATE_FULL (57%) — contrarian, best EV
-          "half"  (0.45-0.55):    WIN_RATE_HALF (75%) — moderate conviction
-          "skip"  (>= 0.55):     no bet — edge evaporates after slippage
+        Tiers based on Bonereaper's avg entry (signal quality indicator):
+          "full"  (entry < $0.55): 62% WR — value/contrarian entries
+          "half"  ($0.55-$0.70):   76% WR — momentum/confirmed trend
+          "skip"  (>= $0.70):      no bet — too late, minimal payout
         """
         if avg_entry_price >= ENTRY_HALF:
             return "skip", 0.0, 0.0

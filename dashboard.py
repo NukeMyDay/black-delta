@@ -128,23 +128,23 @@ def resolve_signal_pending():
 #  Follow Trade Handler
 # ==================================================================
 
-def _compute_kelly_stake(entry_price: float, allocation: float) -> float:
-    """Compute Kelly-sized bet from entry price and capital allocation.
+def _compute_kelly_stake(fill_price: float, win_rate: float, allocation: float) -> float:
+    """Compute Kelly-sized bet from fill price and win rate.
 
-    Uses the same win rate tiers as the signal module.
+    Kelly criterion: f* = (p*b - q) / b
+    Where p=win_rate, q=1-p, b=payout odds (1/price - 1).
+
+    Returns 0 if no edge (Kelly <= 0). This is the ONLY filter needed.
     """
-    from src.signal import WIN_RATE_FULL, WIN_RATE_HALF, ENTRY_FULL, ENTRY_HALF
-
-    if entry_price >= ENTRY_HALF or entry_price <= 0.01:
+    if fill_price >= 0.95 or fill_price <= 0.01:
         return 0.0
 
-    b = 1.0 / entry_price - 1
+    b = 1.0 / fill_price - 1
     if b <= 0:
         return 0.0
 
-    p = WIN_RATE_FULL if entry_price < ENTRY_FULL else WIN_RATE_HALF
-    q = 1 - p
-    kelly = max(0, (p * b - q) / b)
+    q = 1 - win_rate
+    kelly = max(0, (win_rate * b - q) / b)
     fraction = kelly * state.kelly_fraction
     return round(allocation * fraction, 2)
 
@@ -193,18 +193,15 @@ def handle_follow_trade(trade_data: dict):
         _followed_slugs[event_slug] = now
 
     # --- BUY: open a new position ---
+    from src.signal import WIN_RATE_FULL, ENTRY_FULL, SLIPPAGE
+
     # Capital allocation: follow gets (100 - signal_pct)% of betting capital
     follow_pct = 100 - state.signal_pct
     follow_allocation = state.betting_capital * (follow_pct / 100)
 
-    # Kelly-sized bet on our actual fill price (not source price)
-    slippage = 0.05
-    max_price = min(price + slippage, 0.95)
-    tier_cap = 0.68 if price >= 0.55 else 0.62
-    if max_price > tier_cap:
-        max_price = tier_cap
-
-    stake = _compute_kelly_stake(max_price, follow_allocation)
+    # Kelly on fill price — same logic as signals, single gatekeeper
+    max_price = min(price + SLIPPAGE, 0.95)
+    stake = _compute_kelly_stake(max_price, WIN_RATE_FULL, follow_allocation)
     if stake < 0.50:
         return  # No edge or allocation too small
 
@@ -217,12 +214,9 @@ def handle_follow_trade(trade_data: dict):
         token_id = trade_data.get("asset", "")
         if token_id:
             stake = _executor.cap_amount(stake)
-            if price > 0.70:
-                print(f"[FOLLOW] Entry ${price:.2f} > $0.70 — SKIP")
-                return
             market_info = _executor.get_market_info(token_id)
 
-            # Retry FAK up to 5 times with 3s delay
+            # Retry FAK up to 5 times with 3s delay (follow = single trade, no window)
             max_retries = 5
             retry_delay = 3
             for attempt in range(1, max_retries + 1):
@@ -301,7 +295,17 @@ def _handle_follow_sell(trade_data: dict, direction: str, sell_price: float,
 # ==================================================================
 
 def _handle_signal(signal: dict):
-    """Callback when Signal module emits a bet signal."""
+    """Callback when Signal module emits a bet signal.
+
+    Decision flow (simple, no redundant caps):
+      1. Determine win rate from Bonereaper's entry tier
+      2. Compute max fill price = entry + slippage
+      3. Kelly on fill price → if no edge, skip
+      4. Retry order until window closes or filled
+    """
+    from src.signal import (WIN_RATE_FULL, WIN_RATE_HALF,
+                            ENTRY_FULL, ENTRY_HALF, SLIPPAGE)
+
     if state.kill_switch:
         return
 
@@ -309,46 +313,48 @@ def _handle_signal(signal: dict):
     slug = signal.get("slug", "")
     entry_price = signal.get("avg_entry_price", 0)
     entry_tier = signal.get("entry_tier", "?")
+    window_remaining = signal.get("window_remaining_s", 0)
 
-    # Capital allocation: signal gets signal_pct% of betting capital
+    # Capital allocation
     signal_allocation = state.betting_capital * (state.signal_pct / 100)
 
     is_live = _executor and _executor.enabled and not state.sim_mode
     mode = "live" if is_live else "simulation"
 
-    # --- Compute actual fill price FIRST, then size Kelly on it ---
-    # Critical: Kelly must be on what WE pay, not Bonereaper's entry.
-    # Bonereaper enters at e.g. $0.52 but we fill at $0.57 due to slippage.
-    slippage = 0.05  # reduced from 0.10 — tighter entry for better EV
-    max_price = min(entry_price + slippage, 0.95)
-    # Tier-aware cap to prevent overpaying
-    tier_cap = 0.68 if entry_price >= 0.55 else 0.62
-    if max_price > tier_cap:
-        max_price = tier_cap
-    if max_price > 0.70:
-        print(f"[SIGNAL] Fill price ${max_price:.2f} > $0.70 — SKIP")
+    # ── Step 1: Win rate from tier (Bonereaper's entry = signal quality) ──
+    if entry_price < ENTRY_FULL:
+        win_rate = WIN_RATE_FULL
+    elif entry_price < ENTRY_HALF:
+        win_rate = WIN_RATE_HALF
+    else:
+        # Signal module should have filtered this, but safety check
         return
 
-    # Kelly-sized bet on our ACTUAL entry price (not Bonereaper's)
-    stake = _compute_kelly_stake(max_price, signal_allocation)
+    # ── Step 2: Max fill price = entry + slippage ──
+    max_price = min(entry_price + SLIPPAGE, 0.95)
+
+    # ── Step 3: Kelly is the ONLY gatekeeper ──
+    stake = _compute_kelly_stake(max_price, win_rate, signal_allocation)
     if stake < 1.0:
-        print(f"[SIGNAL] No Kelly edge at fill=${max_price:.2f} (src=${entry_price:.2f}) — SKIP")
+        print(f"[SIGNAL] No Kelly edge at fill=${max_price:.2f} "
+              f"(src=${entry_price:.2f}, WR={win_rate:.0%}) — SKIP")
         return
 
-    # Update the signal's suggested bet to match our capital model
     signal["suggested_bet_usd"] = stake
 
-    # --- Live execution: place real order with retry ---
+    # ── Step 4: Live execution — retry until window closes ──
     order_resp = None
     token_id = signal.get("token_id", "")
     if is_live and _executor and token_id and stake >= 0.50:
         stake = _executor.cap_amount(stake)
         market_info = _executor.get_market_info(token_id)
 
-        # Retry FAK up to 5 times with 3s delay — market liquidity fluctuates
-        max_retries = 5
-        retry_delay = 3  # seconds
-        for attempt in range(1, max_retries + 1):
+        # Retry until window closes (leave 15s buffer before market settles)
+        retry_interval = 5  # seconds between attempts
+        deadline = time.time() + max(0, window_remaining - 15)
+        attempt = 0
+        while time.time() < deadline:
+            attempt += 1
             order_resp = _executor.place_market_buy(
                 token_id=token_id,
                 amount_usd=stake,
@@ -358,14 +364,19 @@ def _handle_signal(signal: dict):
             )
             if order_resp:
                 if attempt > 1:
-                    print(f"[SIGNAL] Order filled on attempt {attempt}/{max_retries}")
+                    print(f"[SIGNAL] Order filled on attempt {attempt} "
+                          f"({int(deadline - time.time())}s left in window)")
                 break
-            if attempt < max_retries:
-                print(f"[SIGNAL] FAK no fill (attempt {attempt}/{max_retries}), retry in {retry_delay}s...")
-                time.sleep(retry_delay)
+            remaining = int(deadline - time.time())
+            if remaining > retry_interval:
+                print(f"[SIGNAL] FAK no fill (attempt {attempt}), "
+                      f"retrying... ({remaining}s left)")
+                time.sleep(retry_interval)
+            else:
+                break  # not enough time for another attempt
 
         if not order_resp:
-            print(f"[SIGNAL] All {max_retries} attempts failed — no fill at ${max_price:.2f}")
+            print(f"[SIGNAL] No fill at ${max_price:.2f} — window expired")
             mode = "simulation"
     elif is_live and not token_id:
         mode = "simulation"
@@ -374,16 +385,15 @@ def _handle_signal(signal: dict):
     trade_count = signal.get("trade_count", 0)
 
     tag = "LIVE" if mode == "live" else "SIM"
-    print(f"[SIGNAL] [{tag}] BET {direction} on {slug} "
-          f"(src=${entry_price:.2f}, max=${max_price:.2f} [{entry_tier}], "
-          f"bet=${stake:.2f}, bias={bias:.0%}, {trade_count} trades)")
+    print(f"[SIGNAL] [{tag}] {direction} on {slug} "
+          f"(src=${entry_price:.2f} fill=${max_price:.2f} "
+          f"WR={win_rate:.0%} bet=${stake:.2f} "
+          f"bias={bias:.0%} {trade_count}t)")
 
-    # Only record bets that were actually placed on Polymarket
     if mode != "live" or not order_resp:
         return
 
-    # Use max_price as recorded entry — closest estimate to actual fill price
-    # (CLOB API doesn't return fill price; Bonereaper's entry would be misleading)
+    # Record the trade
     fill_estimate = max_price
     payout_multiplier = round(1.0 / fill_estimate, 2) if fill_estimate > 0 else 0
     bet_record = {
@@ -395,7 +405,7 @@ def _handle_signal(signal: dict):
         "strategy": "signal",
         "source_wallet": "signal",
         "source_name": "Signal",
-        "source_entry": entry_price,  # Bonereaper's entry for reference
+        "source_entry": entry_price,
         "slug": slug,
         "title": slug,
         "outcome": "pending",
@@ -404,6 +414,7 @@ def _handle_signal(signal: dict):
         "mode": "live",
         "order_id": order_resp.get("orderID"),
         "entry_tier": entry_tier,
+        "win_rate": win_rate,
         "bias": round(bias, 4),
         "time": datetime.now(timezone.utc).isoformat(),
     }
