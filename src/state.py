@@ -76,12 +76,13 @@ class AppState:
 
     @property
     def kelly_fraction(self):
-        # 1=1/16, 2=3/32, 3=1/8, 4=3/16, 5=1/4(optimal), 6=5/16, 7=3/8, 8=7/16, 9=1/2, 10=1/2
+        # Conservative for 5-min binary markets with real money.
+        # Level 5 = 1/8 Kelly (textbook "conservative"). Level 1 = 1/40.
         mapping = {
-            1: 1/16, 2: 3/32, 3: 1/8, 4: 3/16, 5: 1/4,
-            6: 5/16, 7: 3/8, 8: 7/16, 9: 1/2, 10: 1/2,
+            1: 1/40, 2: 1/32, 3: 1/24, 4: 1/16, 5: 1/8,
+            6: 3/16, 7: 1/4, 8: 5/16, 9: 3/8, 10: 1/2,
         }
-        return mapping.get(self.risk_level, 0.25)
+        return mapping.get(self.risk_level, 1/8)
 
     @property
     def total_shares(self) -> float:
