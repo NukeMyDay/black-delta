@@ -123,10 +123,37 @@ class Executor:
             print(f"[EXEC]   Signer:  {signer_addr}")
             print(f"[EXEC]   Funder:  {funder_addr}")
             print(f"[EXEC]   SigType: {working_sig} ({self.SIG_LABELS[working_sig]})")
+
+            # Ensure USDC allowance for the exchange contract
+            self._ensure_allowance()
             return True
         except Exception as e:
             print(f"[EXEC] Initialization failed: {e}")
             return False
+
+    def _ensure_allowance(self):
+        """Set USDC allowance for the exchange contract if needed."""
+        if not self.client:
+            return
+        try:
+            params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            result = self.client.get_balance_allowance(params)
+            allowance = 0
+            if isinstance(result, dict) and "allowance" in result:
+                allowance = int(result["allowance"])
+            elif hasattr(result, "allowance"):
+                allowance = int(result.allowance)
+
+            if allowance == 0:
+                print("[EXEC] USDC allowance is 0 — requesting approval...")
+                resp = self.client.update_balance_allowance(
+                    BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+                )
+                print(f"[EXEC] Allowance update response: {resp}")
+            else:
+                print(f"[EXEC] USDC allowance OK: {allowance}")
+        except Exception as e:
+            print(f"[EXEC] Allowance check/update failed: {e}")
 
     # ------------------------------------------------------------------
     #  Order Placement
