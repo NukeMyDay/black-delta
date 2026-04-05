@@ -216,8 +216,8 @@ class Redeemer:
     def _try_redeem_target(self, condition_id: str, cid_bytes: bytes, target: str, label: str) -> bool:
         """Attempt redemption against a specific contract target."""
         ctf = self.w3.eth.contract(address=target, abi=CTF_ABI)
-        redeem_data = ctf.encodeABI(
-            fn_name="redeemPositions",
+        redeem_data = ctf.encode_abi(
+            "redeemPositions",
             args=[USDC_ADDRESS, ZERO_BYTES32, cid_bytes, [1, 2]],
         )
 
@@ -302,12 +302,12 @@ class Redeemer:
             )
             signatures = bytes.fromhex(sig)
 
-            exec_data = safe.encodeABI(
-                fn_name="execTransaction",
+            exec_data = safe.encode_abi(
+                "execTransaction",
                 args=[
                     Web3.to_checksum_address(to),  # to
                     0,  # value
-                    bytes.fromhex(data.hex() if isinstance(data, bytes) else data[2:]),  # data
+                    bytes.fromhex(data[2:]) if isinstance(data, str) else data,  # data
                     0,  # operation (CALL)
                     0,  # safeTxGas
                     0,  # baseGas
