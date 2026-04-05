@@ -201,8 +201,15 @@ def handle_follow_trade(trade_data: dict):
         else:
             mode = "simulation"
 
-    payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
+    tag = "LIVE" if mode == "live" else "SIM"
+    print(f"[FOLLOW] [{tag}] BUY {direction.upper()} @ ${price:.2f} "
+          f"${stake:.2f} from {trade_data.get('name', '') or 'unknown'}")
 
+    # Only record bets that were actually placed on Polymarket
+    if mode != "live" or not order_resp:
+        return
+
+    payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
     copy_trade = {
         "event_slug": event_slug,
         "direction": direction,
@@ -221,16 +228,12 @@ def handle_follow_trade(trade_data: dict):
         "outcome": "pending",
         "pnl_usd": 0,
         "bet_placed": True,
-        "mode": mode,
-        "order_id": (order_resp or {}).get("orderID"),
+        "mode": "live",
+        "order_id": order_resp.get("orderID"),
         "time": datetime.now(timezone.utc).isoformat(),
         "detected_at": trade_data.get("detected_at", time.time()),
     }
-
     state.record_follow_trade(copy_trade)
-    tag = "LIVE" if mode == "live" else "SIM"
-    print(f"[FOLLOW] [{tag}] BUY {direction.upper()} @ ${price:.2f} "
-          f"${stake:.2f} from {copy_trade['source_name'] or 'unknown'}")
 
 
 def _handle_follow_sell(trade_data: dict, direction: str, sell_price: float,
@@ -300,7 +303,10 @@ def _handle_signal(signal: dict):
           f"(entry=${entry_price:.2f} [{entry_tier}], "
           f"bet=${stake:.2f}, bias={bias:.0%}, {trade_count} trades)")
 
-    # Record bet to state so it appears in the Bets tab
+    # Only record bets that were actually placed on Polymarket
+    if mode != "live" or not order_resp:
+        return
+
     payout_multiplier = round(1.0 / entry_price, 2) if entry_price > 0 else 0
     bet_record = {
         "event_slug": slug,
@@ -316,8 +322,8 @@ def _handle_signal(signal: dict):
         "outcome": "pending",
         "pnl_usd": 0,
         "bet_placed": True,
-        "mode": mode,
-        "order_id": (order_resp or {}).get("orderID"),
+        "mode": "live",
+        "order_id": order_resp.get("orderID"),
         "entry_tier": entry_tier,
         "bias": round(bias, 4),
         "time": datetime.now(timezone.utc).isoformat(),
