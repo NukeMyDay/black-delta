@@ -196,12 +196,12 @@ def handle_follow_trade(trade_data: dict):
             stake = _executor.cap_amount(stake)
             slippage = 0.10
             max_price = min(price + slippage, 0.95)
-            # Hard cap: never pay more than 62¢ — at 65% real WR, breakeven is ~65¢
-            if max_price > 0.62:
-                max_price = 0.62
-            # If source entry is already above cap, skip entirely
-            if price > 0.60:
-                print(f"[FOLLOW] Entry ${price:.2f} > $0.60 cap — SKIP")
+            # Tier-aware cap: full tier (<0.60) caps at 0.65, half tier (0.60-0.70) caps at 0.72
+            tier_cap = 0.72 if price >= 0.55 else 0.65
+            if max_price > tier_cap:
+                max_price = tier_cap
+            if price > 0.70:
+                print(f"[FOLLOW] Entry ${price:.2f} > $0.70 — SKIP")
                 return
             market_info = _executor.get_market_info(token_id)
             order_resp = _executor.place_market_buy(
@@ -300,12 +300,12 @@ def _handle_signal(signal: dict):
         stake = _executor.cap_amount(stake)
         slippage = 0.10
         max_price = min(entry_price + slippage, 0.95)
-        # Hard cap: never pay more than 62¢ — at 65% real WR, breakeven is ~65¢
-        if max_price > 0.62:
-            max_price = 0.62
-        # If signal entry is already above cap, skip entirely
-        if entry_price > 0.60:
-            print(f"[SIGNAL] Entry ${entry_price:.2f} > $0.60 cap — SKIP")
+        # Tier-aware cap: full tier (<0.60) caps at 0.65, half tier (0.60-0.70) caps at 0.72
+        tier_cap = 0.72 if entry_price >= 0.55 else 0.65
+        if max_price > tier_cap:
+            max_price = tier_cap
+        if entry_price > 0.70:
+            print(f"[SIGNAL] Entry ${entry_price:.2f} > $0.70 — SKIP")
             return
         market_info = _executor.get_market_info(token_id)
         order_resp = _executor.place_market_buy(
