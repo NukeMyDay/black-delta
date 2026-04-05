@@ -117,8 +117,12 @@ def resolve_follow_pending():
                         pnl = t.get("pnl_usd", 0)
                         won = t.get("outcome") == "win"
                         state.record_daily_bet(pnl, won)
-                # Queue for auto-redeem (sweep loop will retry until on-chain resolves)
-                if _redeemer and _redeemer.enabled:
+                # Queue winning bets for auto-redeem (losing = $0 payout, not worth gas)
+                has_win = any(
+                    t.get("event_slug") == slug and t.get("outcome") == "win"
+                    for t in state.follow_trades
+                )
+                if has_win and _redeemer and _redeemer.enabled:
                     _redeemer.queue_redeem(slug)
                 slugs_seen[slug] = True
             else:

@@ -231,16 +231,16 @@ class Redeemer:
             return False
 
     def queue_resolved_trades(self, trades):
-        """Scan trade list on startup — only queue slugs that still have tokens.
+        """Scan trade list on startup — only queue WINNING slugs with tokens.
 
-        For each resolved slug: fetch market info, check ERC-1155 balances
-        on-chain. If all balances are 0, skip silently (already redeemed).
-        Only slugs with actual token holdings get queued for redemption.
+        Losing positions return $0 on redemption (waste of gas).
+        For each winning slug: check ERC-1155 balances on-chain.
+        If all balances are 0, skip (already redeemed).
         """
         seen = set()
         candidates = []
         for t in trades:
-            if t.get("outcome") in ("win", "lose") and t.get("event_slug"):
+            if t.get("outcome") == "win" and t.get("event_slug"):
                 slug = t["event_slug"]
                 if slug not in seen:
                     seen.add(slug)
@@ -659,12 +659,14 @@ class Redeemer:
             print(f"[REDEEM] Cancel nonce {nonce} failed: {err[:120]}")
             return False
 
+    _stuck_retry_count: int = 0  # escalate gas on repeated failures
+
     def _clear_stuck_nonces(self) -> bool:
         """Detect and cancel stuck transactions blocking the nonce sequence.
 
         Compares pending vs confirmed nonce — if pending > confirmed, there are
         TXs sitting in the mempool that never got mined.  We send a 0-value TX
-        to a burn address at each stuck nonce with aggressive gas to replace them.
+        to a burn address at each stuck nonce with escalating gas to replace them.
         Returns True if all stuck nonces were cleared (or none existed).
         """
         try:
@@ -676,15 +678,27 @@ class Redeemer:
 
         stuck_count = pending - confirmed
         if stuck_count <= 0:
+            self._stuck_retry_count = 0  # reset escalation
             return True  # nothing stuck
 
-        print(f"[REDEEM] Detected {stuck_count} stuck TX(s) in mempool "
-              f"(confirmed nonce={confirmed}, pending nonce={pending})")
+        # After 5 failed attempts, just skip silently (TX will expire from mempool)
+        self._stuck_retry_count += 1
+        if self._stuck_retry_count > 5:
+            if self._stuck_retry_count % 10 == 0:
+                print(f"[REDEEM] {stuck_count} stuck TX(s) still in mempool — "
+                      f"waiting for expiry (attempt {self._stuck_retry_count})")
+            return False
 
-        # Replace each stuck nonce with a 0-value burn-addr transfer at high gas
+        print(f"[REDEEM] Detected {stuck_count} stuck TX(s) in mempool "
+              f"(confirmed={confirmed}, pending={pending}, attempt {self._stuck_retry_count})")
+
         BURN_ADDR = Web3.to_checksum_address("0x000000000000000000000000000000000000dEaD")
         gas_price = self.w3.eth.gas_price
-        replace_gas_price = min(gas_price * 5, self.w3.to_wei(300, "gwei"))
+
+        # Escalate gas price on each retry: 5x, 10x, 15x, 20x, 25x
+        multiplier = 5 + (self._stuck_retry_count - 1) * 5
+        max_gwei = 100 + self._stuck_retry_count * 100  # 200, 300, 400, 500, 600 gwei
+        replace_gas_price = min(gas_price * multiplier, self.w3.to_wei(max_gwei, "gwei"))
 
         cleared = 0
         for nonce in range(confirmed, pending):
@@ -700,7 +714,7 @@ class Redeemer:
                 }
                 signed = self.w3.eth.account.sign_transaction(cancel_tx, self.private_key)
                 tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-                print(f"[REDEEM] Cancel TX sent for nonce {nonce}: {tx_hash.hex()[:16]}... "
+                print(f"[REDEEM] Cancel TX for nonce {nonce}: {tx_hash.hex()[:16]}... "
                       f"({self.w3.from_wei(replace_gas_price, 'gwei'):.0f} gwei)")
 
                 receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=45)
@@ -708,26 +722,29 @@ class Redeemer:
                     cleared += 1
                     print(f"[REDEEM] ✓ Nonce {nonce} cleared (gas used: {receipt.gasUsed})")
                 else:
-                    print(f"[REDEEM] ✗ Cancel TX reverted for nonce {nonce} "
-                          f"(gas used: {receipt.gasUsed}/{cancel_tx['gas']})")
+                    print(f"[REDEEM] ✗ Cancel TX reverted for nonce {nonce}")
             except Exception as e:
                 err_msg = str(e)
                 if "nonce too low" in err_msg:
                     cleared += 1
                     print(f"[REDEEM] Nonce {nonce} already confirmed on-chain")
                 elif "already known" in err_msg:
-                    print(f"[REDEEM] Nonce {nonce}: replacement still underpriced, will retry")
+                    print(f"[REDEEM] Nonce {nonce}: same TX already in mempool, need higher gas next sweep")
+                elif "replacement transaction underpriced" in err_msg:
+                    print(f"[REDEEM] Nonce {nonce}: underpriced at "
+                          f"{self.w3.from_wei(replace_gas_price, 'gwei'):.0f} gwei, will escalate")
                 elif "in-flight transaction limit" in err_msg or "delegated" in err_msg:
-                    print(f"[REDEEM] Delegated account limit hit — stopping, will retry next sweep")
+                    print(f"[REDEEM] Delegated account limit — will retry next sweep")
                     break
                 else:
                     print(f"[REDEEM] Nonce {nonce} cancel failed: {err_msg[:80]}")
 
         if cleared == stuck_count:
-            print(f"[REDEEM] All {stuck_count} stuck nonce(s) cleared — redeems unblocked")
+            self._stuck_retry_count = 0
+            print(f"[REDEEM] All {stuck_count} stuck nonce(s) cleared")
             return True
         else:
-            print(f"[REDEEM] Cleared {cleared}/{stuck_count} stuck nonces — some still pending")
+            print(f"[REDEEM] Cleared {cleared}/{stuck_count} stuck nonces")
             return cleared > 0
 
     def sweep_pending(self):
