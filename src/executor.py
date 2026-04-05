@@ -245,6 +245,26 @@ class Executor:
         return info
 
     # ------------------------------------------------------------------
+    #  Balance
+    # ------------------------------------------------------------------
+    def get_usdc_balance(self) -> float | None:
+        """Fetch live USDC balance from Polymarket CLOB API."""
+        if not self.enabled or not self.client:
+            return None
+        try:
+            result = self.client.get_balance_allowance(
+                params={"asset_type": "USDC"}
+            )
+            if result and "balance" in result:
+                return round(float(result["balance"]), 2)
+            # Fallback: try direct balance key
+            if isinstance(result, (int, float)):
+                return round(float(result), 2)
+        except Exception as e:
+            print(f"[EXEC] Balance fetch failed: {e}")
+        return None
+
+    # ------------------------------------------------------------------
     #  Status / Dashboard
     # ------------------------------------------------------------------
     def get_status(self) -> dict:

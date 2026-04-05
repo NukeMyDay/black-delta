@@ -20,22 +20,15 @@ class AppState:
         self._lock = threading.Lock()
 
         # Capital config (persisted)
-        self.base_capital = float(os.getenv("BASE_CAPITAL", str(start_capital)))
+        self.base_capital = float(start_capital)  # fallback if Polymarket balance unavailable
+        self.polymarket_balance: float | None = None  # live balance from Polymarket API
         self.reinvest_rate = 0.80   # 0-1
         self.risk_level = 5         # 1-10, maps to Kelly fraction
         self.signal_pct = 100       # 0-100
         self.kill_switch = False
 
-        # Investors (share-based pooling)
-        self.investors: list[dict] = [{
-            "name": "Owner",
-            "shares": self.base_capital,
-            "invested": self.base_capital,
-            "withdrawn": 0.0,
-            "fee_pct": 0.0,
-            "fee_shares": 0.0,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }]
+        # Investors (friends only — owner is not listed)
+        self.investors: list[dict] = []
 
         # Daily stats tracking
         self._daily_date = ""
@@ -66,10 +59,13 @@ class AppState:
     # ------------------------------------------------------------------
     @property
     def betting_capital(self):
-        profit = self.follow_pnl  # total realized P&L
+        # Use live Polymarket balance if available, else fall back to base + P&L
+        if self.polymarket_balance is not None:
+            return self.polymarket_balance
+        profit = self.follow_pnl
         if profit > 0:
             return self.base_capital + profit * self.reinvest_rate
-        return self.base_capital + profit  # losses reduce capital directly
+        return self.base_capital + profit
 
     @property
     def reserved(self):
@@ -156,9 +152,9 @@ class AppState:
             return inv
 
     def remove_investor(self, index: int) -> bool:
-        """Remove an investor (cannot remove owner at index 0). Must have 0 shares."""
+        """Remove an investor. Must have 0 shares first."""
         with self._lock:
-            if index <= 0 or index >= len(self.investors):
+            if index < 0 or index >= len(self.investors):
                 return False
             if self.investors[index]["shares"] > 0.001:
                 return False
@@ -172,7 +168,7 @@ class AppState:
                 return False
             if name is not None:
                 self.investors[index]["name"] = name
-            if fee_pct is not None and index > 0:
+            if fee_pct is not None:
                 self.investors[index]["fee_pct"] = max(0.0, min(1.0, fee_pct))
             return True
 
@@ -226,12 +222,9 @@ class AppState:
             inv["shares"] -= shares_to_redeem
             inv["withdrawn"] += net_payout
             inv["fee_shares"] += fee_shares
+            # Fee stays in pool (increases owner's proportional share automatically)
 
-            # Transfer fee shares to owner
-            if fee_shares > 0 and index > 0:
-                self.investors[0]["shares"] += fee_shares
-
-            # Cash leaves the fund
+            # Cash leaves the fund — only net payout actually exits
             self.base_capital -= net_payout
 
             return {
@@ -504,20 +497,9 @@ class AppState:
             self.signal_pct = data.get("signal_pct", self.signal_pct)
             self._peak_capital = data.get("peak_capital", self._peak_capital)
 
-            # Investors (backward compatible — create owner if missing)
+            # Investors — friends only, strip legacy "Owner" entry if present
             investors = data.get("investors", [])
-            if investors:
-                self.investors = investors
-            else:
-                self.investors = [{
-                    "name": "Owner",
-                    "shares": self.base_capital,
-                    "invested": self.base_capital,
-                    "withdrawn": 0.0,
-                    "fee_pct": 0.0,
-                    "fee_shares": 0.0,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                }]
+            self.investors = [inv for inv in investors if inv.get("name") != "Owner"]
 
         saved_at = data.get("saved_at", "unknown")
         print(f"[STATE] Follow state restored from disk (saved {saved_at})")

@@ -336,6 +336,23 @@ def _state_saver_loop(interval: int = 60):
             print(f"[STATE] Save failed: {e}")
 
 
+def _balance_sync_loop(interval: int = 60):
+    """Background thread: sync live Polymarket USDC balance into state."""
+    while True:
+        time.sleep(interval)
+        try:
+            if _executor and _executor.enabled:
+                balance = _executor.get_usdc_balance()
+                if balance is not None:
+                    state.polymarket_balance = balance
+                    # Keep peak tracking up to date
+                    if balance > state._peak_capital:
+                        state._peak_capital = balance
+                    print(f"[BALANCE] Polymarket USDC: ${balance:.2f}")
+        except Exception as e:
+            print(f"[BALANCE] Sync failed: {e}")
+
+
 # ==================================================================
 #  API Endpoints
 # ==================================================================
@@ -678,9 +695,10 @@ def main():
     sig_alloc = state.betting_capital * (state.signal_pct / 100)
     signal_agg.sim_capital = sig_alloc
 
-    # --- Resolution + State Saver ---
+    # --- Resolution + State Saver + Balance Sync ---
     threading.Thread(target=_resolution_loop, daemon=True).start()
     threading.Thread(target=_state_saver_loop, args=(60,), daemon=True).start()
+    threading.Thread(target=_balance_sync_loop, args=(60,), daemon=True).start()
 
     # --- Follow Feed ---
     follow_feed = FollowFeed()
@@ -712,6 +730,12 @@ def main():
     if executor.initialize():
         print("  Mode: LIVE TRADING")
         print(f"  Max bet: ${executor.max_bet_usd} | Daily loss limit: ${executor.daily_loss_limit}")
+        # Fetch initial balance
+        balance = executor.get_usdc_balance()
+        if balance is not None:
+            state.polymarket_balance = balance
+            state._peak_capital = max(state._peak_capital, balance)
+            print(f"  Polymarket Balance: ${balance:.2f}")
     else:
         print("  Mode: SIMULATION (set POLY_* env vars for live)")
 

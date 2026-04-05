@@ -387,9 +387,9 @@ input[type="range"]::-webkit-slider-thumb {
   <!-- Capital Overview -->
   <div class="capital-grid">
     <div class="card">
-      <div class="card-label">Betting Capital</div>
-      <div class="card-value" id="cap-betting" style="color:var(--accent)">$1,000</div>
-      <div class="card-sub">Base: $<span id="cap-base">1,000</span></div>
+      <div class="card-label">Polymarket Balance</div>
+      <div class="card-value" id="cap-betting" style="color:var(--accent)">$0.00</div>
+      <div class="card-sub">Friends: $<span id="cap-friends">0.00</span></div>
     </div>
     <div class="card">
       <div class="card-label">Profit</div>
@@ -640,7 +640,9 @@ function render(d) {
   // Capital
   const cap = d.capital;
   setText('cap-betting', '$' + fmt(cap.betting));
-  setText('cap-base', fmt(cap.base));
+  // Friends' total invested
+  const friendsTotal = (d.investors || []).reduce((s, i) => s + i.current_value, 0);
+  setText('cap-friends', fmt(friendsTotal));
   const profitEl = document.getElementById('cap-profit');
   profitEl.textContent = (cap.profit >= 0 ? '+$' : '-$') + fmt(Math.abs(cap.profit));
   profitEl.style.color = cap.profit >= 0 ? 'var(--green)' : 'var(--red)';
