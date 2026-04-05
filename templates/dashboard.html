@@ -830,11 +830,15 @@ function renderPositions(positions) {
   }
   none.style.display = 'none';
   grid.innerHTML = positions.slice(0, 12).map(p => {
+    const expired = p.countdown_s <= 0;
     const mm = Math.floor(p.countdown_s / 60);
     const ss = String(p.countdown_s % 60).padStart(2, '0');
+    const countdownHtml = expired
+      ? `<div class="pos-countdown" style="font-size:13px;color:var(--orange);letter-spacing:0.5px">VALIDATING</div>`
+      : `<div class="pos-countdown">${mm}:${ss}</div>`;
     return `<div class="pos-card">
       <div class="pos-dir ${p.direction}">${p.direction.toUpperCase()}</div>
-      <div class="pos-countdown">${mm}:${ss}</div>
+      ${countdownHtml}
       <div class="pos-meta">$${Number(p.stake).toFixed(2)} @ $${Number(p.entry_price).toFixed(2)} · ${p.strategy}</div>
     </div>`;
   }).join('');
