@@ -22,7 +22,7 @@ class AppState:
         # Capital config (persisted)
         self.base_capital = float(start_capital)  # fallback if Polymarket balance unavailable
         self.polymarket_balance: float | None = None  # live balance from Polymarket API
-        self.reinvest_rate = 0.80   # 0-1
+        self.betting_capital_fixed: float | None = None  # absolute $ override (None = use Polymarket balance)
         self.risk_level = 5         # 1-10, maps to Kelly fraction
         self.signal_pct = 100       # 0-100
         self.daily_loss_limit_pct = 10  # % of betting capital
@@ -78,18 +78,18 @@ class AppState:
 
     @property
     def betting_capital(self):
-        # Use live Polymarket balance (cash only) for bet sizing to avoid over-leverage
+        """Capital base for bet sizing.
+
+        Priority:
+          1. User-set fixed amount (e.g. $1000) — most intuitive
+          2. Live Polymarket USDC balance — real cash on-chain
+          3. Fallback: base_capital +/- P&L
+        """
+        if self.betting_capital_fixed is not None:
+            return self.betting_capital_fixed
         if self.polymarket_balance is not None:
             return self.polymarket_balance
-        profit = self.follow_pnl
-        if profit > 0:
-            return self.base_capital + profit * self.reinvest_rate
-        return self.base_capital + profit
-
-    @property
-    def reserved(self):
-        profit = self.follow_pnl
-        return max(0, profit) * (1 - self.reinvest_rate)
+        return self.base_capital + self.follow_pnl
 
     @property
     def kelly_fraction(self):
@@ -492,7 +492,7 @@ class AppState:
                 "follow_pnl_curve": list(self.follow_pnl_curve),
                 # Capital config
                 "base_capital": self.base_capital,
-                "reinvest_rate": self.reinvest_rate,
+                "betting_capital_fixed": self.betting_capital_fixed,
                 "risk_level": self.risk_level,
                 "signal_pct": self.signal_pct,
                 "daily_loss_limit_pct": self.daily_loss_limit_pct,
@@ -535,7 +535,13 @@ class AppState:
 
             # Capital config (backward compatible -- use defaults if missing)
             self.base_capital = data.get("base_capital", self.base_capital)
-            self.reinvest_rate = data.get("reinvest_rate", self.reinvest_rate)
+            # Betting capital: fixed override or None (= use live balance)
+            bcf = data.get("betting_capital_fixed")
+            if bcf is not None:
+                self.betting_capital_fixed = float(bcf)
+            else:
+                # Migrate from old reinvest_rate: ignore, just leave as None
+                self.betting_capital_fixed = None
             self.risk_level = data.get("risk_level", self.risk_level)
             self.signal_pct = data.get("signal_pct", self.signal_pct)
             self.daily_loss_limit_pct = data.get("daily_loss_limit_pct", self.daily_loss_limit_pct)

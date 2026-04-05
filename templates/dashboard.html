@@ -435,10 +435,10 @@ body {
       </div>
     </div>
     <div class="control-group">
-      <div class="control-label">Reinvest Rate</div>
+      <div class="control-label">Betting Capital</div>
       <div class="ctrl-input-row">
-        <input type="number" class="ctrl-input" id="reinvest-input" min="0" max="100" value="80" onchange="onReinvestChange(this.value)">
-        <span class="ctrl-unit">%</span>
+        <input type="number" class="ctrl-input" id="capital-input" min="0" step="50" placeholder="auto" onchange="onCapitalChange(this.value)">
+        <span class="ctrl-unit">$ <span id="capital-mode" style="color:var(--text-dim);font-size:10px"></span></span>
       </div>
     </div>
     <div class="control-group">
@@ -732,7 +732,20 @@ function render(d) {
   // Config sync (don't override while user is focused)
   const cfg = d.config;
   syncInput('risk-input', cfg.risk_level);
-  syncInput('reinvest-input', Math.round(cfg.reinvest_rate * 100));
+  // Betting capital: show fixed value or "auto" placeholder
+  const capInput = document.getElementById('capital-input');
+  if (capInput && document.activeElement !== capInput) {
+    if (cfg.betting_capital_fixed != null) {
+      capInput.value = Math.round(cfg.betting_capital_fixed);
+      capInput.placeholder = 'auto';
+    } else {
+      capInput.value = '';
+      capInput.placeholder = 'auto';
+    }
+  }
+  const capMode = d.capital?.capital_mode === 'fixed' ? 'fixed' : `live $${fmt(d.capital?.betting || 0)}`;
+  setText('capital-mode', capMode);
+
   syncInput('mix-input', cfg.signal_pct);
   syncInput('loss-input', cfg.daily_loss_limit_pct || 10);
   updateRiskLabel(cfg.risk_level);
@@ -802,10 +815,18 @@ function onRiskChange(v) {
   updateRiskLabel(v);
   sendConfig({ risk_level: v });
 }
-function onReinvestChange(v) {
-  v = Math.max(0, Math.min(100, +v));
-  document.getElementById('reinvest-input').value = v;
-  sendConfig({ reinvest_rate: v / 100 });
+function onCapitalChange(v) {
+  const input = document.getElementById('capital-input');
+  if (!v || v === '' || v === '0') {
+    // Empty or 0 = auto mode (use live balance)
+    input.value = '';
+    input.placeholder = 'auto';
+    sendConfig({ betting_capital_fixed: null });
+  } else {
+    v = Math.max(10, +v);
+    input.value = v;
+    sendConfig({ betting_capital_fixed: v });
+  }
 }
 function onMixChange(v) {
   v = Math.max(0, Math.min(100, +v));

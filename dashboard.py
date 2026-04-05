@@ -563,7 +563,7 @@ async def api_dashboard():
         "pending_value": round(pending_value, 2),
         "balance": round(portfolio, 2),  # backward compat
         "profit": round(state.computed_pnl, 2),
-        "reserved": round(state.reserved, 2),
+        "capital_mode": "fixed" if state.betting_capital_fixed else "live",
         "betting": round(state.betting_capital, 2),
         "max_drawdown": state.max_drawdown,
         "accrued_fees": state.total_accrued_fees,
@@ -575,7 +575,7 @@ async def api_dashboard():
     config_data = {
         "risk_level": state.risk_level,
         "kelly_fraction": round(state.kelly_fraction, 4),
-        "reinvest_rate": state.reinvest_rate,
+        "betting_capital_fixed": state.betting_capital_fixed,
         "signal_pct": state.signal_pct,
         "follow_pct": 100 - state.signal_pct,
         "kill_switch": state.kill_switch,
@@ -658,8 +658,12 @@ async def api_update_config(request: Request):
 
     if "risk_level" in body:
         state.risk_level = max(1, min(10, int(body["risk_level"])))
-    if "reinvest_rate" in body:
-        state.reinvest_rate = max(0, min(1, float(body["reinvest_rate"])))
+    if "betting_capital_fixed" in body:
+        val = body["betting_capital_fixed"]
+        if val is None or val == "" or val == "auto":
+            state.betting_capital_fixed = None  # use live balance
+        else:
+            state.betting_capital_fixed = max(10, float(val))  # min $10
     if "signal_pct" in body:
         state.signal_pct = max(0, min(100, float(body["signal_pct"])))
     if "kill_switch" in body:
@@ -682,7 +686,7 @@ async def api_update_config(request: Request):
         "config": {
             "risk_level": state.risk_level,
             "kelly_fraction": round(state.kelly_fraction, 4),
-            "reinvest_rate": state.reinvest_rate,
+            "betting_capital_fixed": state.betting_capital_fixed,
             "signal_pct": state.signal_pct,
             "follow_pct": 100 - state.signal_pct,
             "kill_switch": state.kill_switch,
