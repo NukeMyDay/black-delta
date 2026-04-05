@@ -163,25 +163,35 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.8px;
   color: var(--text-dim);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+}
+.ctrl-input-row {
   display: flex;
-  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
 }
-.control-label span { color: var(--accent-bright); font-family: var(--mono); font-size: 11px; }
-input[type="range"] {
-  width: 100%;
-  -webkit-appearance: none;
-  background: var(--border);
-  height: 4px;
-  border-radius: 2px;
+.ctrl-input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--accent-bright);
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 700;
+  width: 60px;
+  padding: 2px 0;
   outline: none;
+  -moz-appearance: textfield;
+  text-align: left;
 }
-input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: var(--accent);
-  cursor: pointer;
+.ctrl-input::-webkit-inner-spin-button,
+.ctrl-input::-webkit-outer-spin-button { -webkit-appearance: none; }
+.ctrl-input:focus { border-bottom-color: var(--accent); }
+.ctrl-unit {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  white-space: nowrap;
 }
 
 /* ============================================================
@@ -417,20 +427,32 @@ input[type="range"]::-webkit-slider-thumb {
   <!-- Controls -->
   <div class="controls">
     <div class="control-group">
-      <div class="control-label">Risk Level <span id="risk-label">5/10 (Optimal)</span></div>
-      <input type="range" id="risk-slider" min="1" max="10" value="5" oninput="onRiskChange(this.value)">
+      <div class="control-label">Risk Level</div>
+      <div class="ctrl-input-row">
+        <input type="number" class="ctrl-input" id="risk-input" min="1" max="10" value="5" onchange="onRiskChange(this.value)">
+        <span class="ctrl-unit">/ 10 &nbsp;<span id="risk-label" style="color:var(--text-dim);font-size:10px">(Optimal)</span></span>
+      </div>
     </div>
     <div class="control-group">
-      <div class="control-label">Reinvest Rate <span id="reinvest-label">80%</span></div>
-      <input type="range" id="reinvest-slider" min="0" max="100" value="80" oninput="onReinvestChange(this.value)">
+      <div class="control-label">Reinvest Rate</div>
+      <div class="ctrl-input-row">
+        <input type="number" class="ctrl-input" id="reinvest-input" min="0" max="100" value="80" onchange="onReinvestChange(this.value)">
+        <span class="ctrl-unit">%</span>
+      </div>
     </div>
     <div class="control-group">
-      <div class="control-label">Strategy Mix <span id="mix-label">Signal 100% / Follow 0%</span></div>
-      <input type="range" id="mix-slider" min="0" max="100" value="100" oninput="onMixChange(this.value)">
+      <div class="control-label">Signal Allocation</div>
+      <div class="ctrl-input-row">
+        <input type="number" class="ctrl-input" id="mix-input" min="0" max="100" value="100" onchange="onMixChange(this.value)">
+        <span class="ctrl-unit">% Signal &nbsp;<span id="mix-label" style="color:var(--text-dim);font-size:10px">/ 0% Follow</span></span>
+      </div>
     </div>
     <div class="control-group">
-      <div class="control-label">Daily Loss Limit <span id="loss-label">10% ($0)</span></div>
-      <input type="range" id="loss-slider" min="1" max="90" step="1" value="10" oninput="onLossLimitChange(this.value)">
+      <div class="control-label">Daily Loss Limit</div>
+      <div class="ctrl-input-row">
+        <input type="number" class="ctrl-input" id="loss-input" min="1" max="90" value="10" onchange="onLossLimitChange(this.value)">
+        <span class="ctrl-unit">% &nbsp;<span id="loss-label" style="color:var(--text-dim);font-size:10px">($0)</span></span>
+      </div>
     </div>
   </div>
 
@@ -683,16 +705,15 @@ function render(d) {
   const pendingCount = (d.open_positions || []).length;
   setText('pending-count', `${pendingCount} open`);
 
-  // Config sync (don't override while user is dragging)
+  // Config sync (don't override while user is focused)
   const cfg = d.config;
-  syncSlider('risk-slider', cfg.risk_level);
-  syncSlider('reinvest-slider', Math.round(cfg.reinvest_rate * 100));
-  syncSlider('mix-slider', cfg.signal_pct);
-  syncSlider('loss-slider', cfg.daily_loss_limit_pct || 10);
+  syncInput('risk-input', cfg.risk_level);
+  syncInput('reinvest-input', Math.round(cfg.reinvest_rate * 100));
+  syncInput('mix-input', cfg.signal_pct);
+  syncInput('loss-input', cfg.daily_loss_limit_pct || 10);
   updateRiskLabel(cfg.risk_level);
-  setText('reinvest-label', Math.round(cfg.reinvest_rate * 100) + '%');
-  setText('mix-label', `Signal ${cfg.signal_pct}% / Follow ${cfg.follow_pct}%`);
-  setText('loss-label', `${cfg.daily_loss_limit_pct || 10}% ($${fmt(cfg.daily_loss_limit_usd || 0)})`);
+  setText('mix-label', `/ ${cfg.follow_pct}% Follow`);
+  setText('loss-label', `($${fmt(cfg.daily_loss_limit_usd || 0)})`);
 
   // Kill switch
   const btn = document.getElementById('kill-btn');
@@ -732,13 +753,13 @@ function render(d) {
 // ============================================================
 function fmt(n) { return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
-function syncSlider(id, val) {
+function syncInput(id, val) {
   const el = document.getElementById(id);
-  if (el && !el.matches(':active')) el.value = val;
+  if (el && document.activeElement !== el) el.value = val;
 }
 function updateRiskLabel(v) {
   const labels = {1:'Very Safe',2:'Safe',3:'Cautious',4:'Moderate',5:'Optimal',6:'Growth',7:'Aggressive',8:'High Risk',9:'Very High',10:'Max Risk'};
-  setText('risk-label', `${v}/10 (${labels[v] || ''})`);
+  setText('risk-label', `(${labels[+v] || ''})`);
 }
 
 let configTimer = null;
@@ -746,12 +767,30 @@ function sendConfig(patch) {
   clearTimeout(configTimer);
   configTimer = setTimeout(() => {
     fetch('/api/config', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) });
-  }, 300);
+  }, 400);
 }
-function onRiskChange(v) { updateRiskLabel(+v); sendConfig({ risk_level: +v }); }
-function onReinvestChange(v) { setText('reinvest-label', v + '%'); sendConfig({ reinvest_rate: v / 100 }); }
-function onMixChange(v) { setText('mix-label', `Signal ${v}% / Follow ${100-v}%`); sendConfig({ signal_pct: +v }); }
-function onLossLimitChange(v) { setText('loss-label', v + '%'); sendConfig({ daily_loss_limit_pct: +v }); }
+function onRiskChange(v) {
+  v = Math.max(1, Math.min(10, +v));
+  document.getElementById('risk-input').value = v;
+  updateRiskLabel(v);
+  sendConfig({ risk_level: v });
+}
+function onReinvestChange(v) {
+  v = Math.max(0, Math.min(100, +v));
+  document.getElementById('reinvest-input').value = v;
+  sendConfig({ reinvest_rate: v / 100 });
+}
+function onMixChange(v) {
+  v = Math.max(0, Math.min(100, +v));
+  document.getElementById('mix-input').value = v;
+  setText('mix-label', `/ ${100-v}% Follow`);
+  sendConfig({ signal_pct: v });
+}
+function onLossLimitChange(v) {
+  v = Math.max(1, Math.min(90, +v));
+  document.getElementById('loss-input').value = v;
+  sendConfig({ daily_loss_limit_pct: v });
+}
 function toggleKillSwitch() {
   if (!lastData) return;
   const newState = !lastData.config.kill_switch;
