@@ -128,6 +128,7 @@ class Redeemer:
         self.enabled = False
         self._redeemed: set[str] = set()  # condition IDs already redeemed
         self._pending_slugs: dict[str, bool] = {}  # slug → neg_risk, awaiting on-chain resolution
+        self._nonce: int | None = None  # locally tracked nonce
 
     def initialize(self, private_key: str, signer: str, funder: str, sig_type: int) -> bool:
         """Initialize web3 connection, trying multiple RPCs."""
@@ -213,6 +214,15 @@ class Redeemer:
         except Exception:
             return False
 
+    def _get_nonce(self) -> int:
+        """Get the next nonce, using local tracking to avoid collisions."""
+        on_chain = self.w3.eth.get_transaction_count(self.signer_address)
+        if self._nonce is None or self._nonce < on_chain:
+            self._nonce = on_chain
+        nonce = self._nonce
+        self._nonce += 1
+        return nonce
+
     def _try_redeem_target(self, condition_id: str, cid_bytes: bytes, target: str, label: str) -> bool:
         """Attempt redemption against a specific contract target."""
         ctf = self.w3.eth.contract(address=target, abi=CTF_ABI)
@@ -229,16 +239,33 @@ class Redeemer:
         if not tx:
             return False
 
-        signed = self.w3.eth.account.sign_transaction(tx, self.private_key)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+        try:
+            signed = self.w3.eth.account.sign_transaction(tx, self.private_key)
+            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        except Exception as e:
+            err_msg = str(e)
+            # TX was not accepted — nonce was NOT consumed, roll back
+            if self._nonce is not None:
+                self._nonce -= 1
+            if "already known" in err_msg or "underpriced" in err_msg:
+                # TX with this nonce already in mempool — skip, will clear next sweep
+                print(f"[REDEEM] {label}: nonce conflict ({err_msg[:60]}), will retry next sweep")
+                return False
+            if "nonce too low" in err_msg:
+                # Nonce already used on-chain — resync
+                self._nonce = None
+                print(f"[REDEEM] {label}: nonce too low, resyncing")
+                return False
+            raise
+
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
 
         if receipt.status == 1:
             self._redeemed.add(condition_id)
-            print(f"[REDEEM] OK via {label}: {condition_id[:16]}... tx={tx_hash.hex()[:16]}...")
+            print(f"[REDEEM] ✓ {label}: {condition_id[:16]}... tx={tx_hash.hex()[:16]}...")
             return True
         else:
-            print(f"[REDEEM] TX reverted via {label}: {condition_id[:16]}...")
+            print(f"[REDEEM] ✗ {label} reverted: {condition_id[:16]}... (nonce used, trying next target)")
             return False
 
     def redeem(self, condition_id: str, neg_risk: bool = False) -> bool:
@@ -269,7 +296,7 @@ class Redeemer:
     def _build_eoa_tx(self, to: str, data: bytes) -> dict | None:
         """Build a direct transaction from the signer."""
         try:
-            nonce = self.w3.eth.get_transaction_count(self.signer_address)
+            nonce = self._get_nonce()
             gas_price = self.w3.eth.gas_price
             tx = {
                 "to": to,
@@ -318,7 +345,7 @@ class Redeemer:
                 ],
             )
 
-            nonce = self.w3.eth.get_transaction_count(self.signer_address)
+            nonce = self._get_nonce()
             gas_price = self.w3.eth.gas_price
             tx = {
                 "to": self.funder_address,
@@ -362,21 +389,42 @@ class Redeemer:
         return False
 
     def sweep_pending(self):
-        """Try to redeem all queued slugs. Called periodically by background loop."""
+        """Try to redeem all queued slugs sequentially. Called periodically."""
         if not self.enabled or not self._pending_slugs:
             return
         if not self._ensure_rpc():
             print(f"[REDEEM] Sweep: no RPC available ({len(self._pending_slugs)} slugs pending)")
             return
+
+        # Reset local nonce from chain at start of each sweep
+        self._nonce = None
+
+        slugs = list(self._pending_slugs.items())
+        print(f"[REDEEM] Sweep: processing {len(slugs)} pending slugs...")
         done = []
-        for slug, neg_risk in list(self._pending_slugs.items()):
+        errors = 0
+        for slug, neg_risk in slugs:
             try:
-                if self.try_redeem_slug(slug, neg_risk):
+                result = self.try_redeem_slug(slug, neg_risk)
+                if result:
                     done.append(slug)
+                    time.sleep(2)  # wait for TX to propagate before next
+                else:
+                    errors += 1
+                    if errors >= 3:
+                        # Too many failures, likely nonce issues — stop and retry next sweep
+                        print(f"[REDEEM] Sweep: {errors} failures, stopping early")
+                        break
             except Exception as e:
                 print(f"[REDEEM] Sweep error for {slug}: {e}")
+                self._nonce = None
+                errors += 1
+                if errors >= 3:
+                    break
         for slug in done:
             self._pending_slugs.pop(slug, None)
+        if done or errors:
+            print(f"[REDEEM] Sweep: {len(done)} redeemed, {errors} failed, {len(self._pending_slugs)} remaining")
 
     def try_redeem_slug(self, slug: str, neg_risk: bool = False) -> bool:
         """Try to redeem a resolved market by slug."""
