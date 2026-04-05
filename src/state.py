@@ -504,7 +504,7 @@ class AppState:
             self.risk_level = data.get("risk_level", self.risk_level)
             self.signal_pct = data.get("signal_pct", self.signal_pct)
             self.daily_loss_limit_pct = data.get("daily_loss_limit_pct", self.daily_loss_limit_pct)
-            self._peak_capital = data.get("peak_capital", self._peak_capital)
+            self._peak_capital = max(data.get("peak_capital", self._peak_capital), self.base_capital)
             self._start_of_day_balance = data.get("start_of_day_balance", self._start_of_day_balance)
             if "kill_switch" in data:
                 self.kill_switch = data["kill_switch"]
