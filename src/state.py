@@ -66,6 +66,11 @@ class AppState:
         return sum(t.get("stake_usd", 0) for t in self.follow_trades if t.get("outcome") == "pending")
 
     @property
+    def computed_pnl(self) -> float:
+        """P&L computed on-the-fly from trade records (authoritative, not accumulated)."""
+        return sum(t.get("pnl_usd", 0) for t in self.follow_trades if t.get("outcome") not in ("pending", None))
+
+    @property
     def portfolio_value(self) -> float:
         """Total portfolio: USDC cash + value of pending positions (at cost basis)."""
         cash = self.polymarket_balance if self.polymarket_balance is not None else self.base_capital
@@ -162,8 +167,8 @@ class AppState:
             if won:
                 self._daily_wins += 1
 
-            # Update peak capital for drawdown tracking
-            current = self.betting_capital
+            # Update peak capital for drawdown tracking (use portfolio, not just cash)
+            current = self.portfolio_value
             if current > self._peak_capital:
                 self._peak_capital = current
 
@@ -556,12 +561,13 @@ class AppState:
         with self._lock:
             resolved = self.follow_wins + self.follow_losses
             win_rate = (self.follow_wins / resolved * 100 if resolved > 0 else 0)
+            pnl = self.computed_pnl  # authoritative: from trade records
             return {
                 "capital": {
                     "start": self.follow_start_capital,
                     "current": round(self.follow_capital, 2),
-                    "pnl": round(self.follow_pnl, 2),
-                    "pnl_pct": round(self.follow_pnl / self.follow_start_capital * 100, 2)
+                    "pnl": round(pnl, 2),
+                    "pnl_pct": round(pnl / self.follow_start_capital * 100, 2)
                             if self.follow_start_capital else 0,
                 },
                 "stats": {

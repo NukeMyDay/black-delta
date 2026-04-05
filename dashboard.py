@@ -456,7 +456,7 @@ async def api_dashboard():
         "cash": round(cash, 2),
         "pending_value": round(pending_value, 2),
         "balance": round(portfolio, 2),  # backward compat
-        "profit": round(state.follow_pnl, 2),
+        "profit": round(state.computed_pnl, 2),
         "reserved": round(state.reserved, 2),
         "betting": round(state.betting_capital, 2),
         "max_drawdown": state.max_drawdown,

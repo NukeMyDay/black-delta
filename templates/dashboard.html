@@ -708,9 +708,11 @@ function render(d) {
   const rangeStats = computeRangeStats((d.follow || {}).trades || [], cutoff);
   const rangeLabels = { today: 'Today', week: 'This week', month: 'This month', all: 'All time' };
 
-  // Profit (filtered by chart range)
+  // Profit — "All time" uses true portfolio profit; ranges use trade P&L
   const profitEl = document.getElementById('cap-profit');
-  const rangeProfit = rangeStats.profit;
+  const investorDeposits = (d.investors || []).reduce((s, i) => s + (i.invested || 0) - (i.withdrawn || 0), 0);
+  const trueProfit = (cap.portfolio || cap.betting) - cap.base - investorDeposits;
+  const rangeProfit = chartRange === 'all' ? trueProfit : rangeStats.profit;
   profitEl.textContent = (rangeProfit >= 0 ? '+$' : '-$') + fmt(Math.abs(rangeProfit));
   profitEl.style.color = rangeProfit >= 0 ? 'var(--green)' : 'var(--red)';
   setText('profit-sub', rangeLabels[chartRange] || 'All time');
@@ -961,7 +963,14 @@ function renderChart(d) {
     ? allTrades.filter(t => new Date(t.time).getTime() >= cutoff)
     : allTrades;
 
+  // For filtered ranges, start cumPnl from pre-period total so chart is continuous
   let cumPnl = 0;
+  if (cutoff) {
+    for (const t of allTrades) {
+      if (new Date(t.time).getTime() < cutoff) cumPnl += t.pnl_usd || 0;
+      else break;
+    }
+  }
   const livePoints = filteredTrades.map(t => {
     cumPnl += t.pnl_usd || 0;
     return { x: new Date(t.time).getTime(), y: cumPnl / baseCap * 100 };
