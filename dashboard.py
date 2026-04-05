@@ -387,6 +387,8 @@ async def api_dashboard():
         "signal_pct": state.signal_pct,
         "follow_pct": 100 - state.signal_pct,
         "kill_switch": state.kill_switch,
+        "daily_loss_limit_pct": state.daily_loss_limit_pct,
+        "daily_loss_limit_usd": round(state.betting_capital * state.daily_loss_limit_pct / 100, 2),
     }
 
     # Daily summary
@@ -469,6 +471,11 @@ async def api_update_config(request: Request):
         state.signal_pct = max(0, min(100, float(body["signal_pct"])))
     if "kill_switch" in body:
         state.kill_switch = bool(body["kill_switch"])
+    if "daily_loss_limit_pct" in body:
+        state.daily_loss_limit_pct = max(1, min(100, float(body["daily_loss_limit_pct"])))
+        # Sync absolute limit to executor
+        if _executor:
+            _executor.daily_loss_limit = state.betting_capital * state.daily_loss_limit_pct / 100
 
     # Update signal module's capital if available
     if _signal:
@@ -730,6 +737,8 @@ def main():
     if executor.initialize():
         print("  Mode: LIVE TRADING")
         print(f"  Max bet: ${executor.max_bet_usd} | Daily loss limit: ${executor.daily_loss_limit}")
+        # Sync loss limit from state's % setting
+        executor.daily_loss_limit = state.betting_capital * state.daily_loss_limit_pct / 100
         # Fetch initial balance
         balance = executor.get_usdc_balance()
         if balance is not None:
