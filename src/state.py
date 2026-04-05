@@ -117,6 +117,25 @@ class AppState:
     # ------------------------------------------------------------------
     #  Daily stats
     # ------------------------------------------------------------------
+    def _rebuild_daily_stats(self):
+        """Reconstruct daily stats from trade history (survives container restarts)."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self._daily_date = today
+        self._daily_pnl = 0.0
+        self._daily_bets = 0
+        self._daily_wins = 0
+        for t in self.follow_trades:
+            if t.get("outcome") == "pending":
+                continue
+            t_time = t.get("time", "")
+            if not t_time or not t_time.startswith(today):
+                continue
+            pnl = t.get("pnl_usd", 0)
+            self._daily_bets += 1
+            self._daily_pnl += pnl
+            if t.get("outcome") in ("win", "closed") and pnl >= 0:
+                self._daily_wins += 1
+
     def record_daily_bet(self, pnl: float, won: bool):
         """Update daily stats and peak/drawdown tracking."""
         with self._lock:
@@ -510,6 +529,9 @@ class AppState:
                 self.kill_switch = data["kill_switch"]
             if "sim_mode" in data:
                 self.sim_mode = data["sim_mode"]
+
+            # Reconstruct daily stats from trade history (survives restarts)
+            self._rebuild_daily_stats()
 
             # Investors — friends only, strip legacy "Owner" entry if present
             investors = data.get("investors", [])
