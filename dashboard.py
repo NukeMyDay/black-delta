@@ -224,11 +224,13 @@ def handle_follow_trade(trade_data: dict):
     if mode != "live" or not order_resp:
         return
 
-    payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
+    # Use max_price as recorded entry — closest estimate to actual fill price
+    fill_estimate = max_price
+    payout_multiplier = round(1.0 / fill_estimate, 2) if fill_estimate > 0 else 0
     copy_trade = {
         "event_slug": event_slug,
         "direction": direction,
-        "contract_price": price,
+        "contract_price": fill_estimate,
         "payout_multiplier": payout_multiplier,
         "stake_usd": stake,
         "strategy": "follow",
@@ -237,6 +239,7 @@ def handle_follow_trade(trade_data: dict):
         "source_size": size,
         "source_cost": round(price * size, 2),
         "source_price": price,
+        "source_entry": price,  # Source user's entry for reference
         "tx_hash": trade_data.get("tx_hash", ""),
         "slug": trade_data.get("slug", ""),
         "title": trade_data.get("title", ""),
@@ -322,23 +325,27 @@ def _handle_signal(signal: dict):
 
     tag = "LIVE" if mode == "live" else "SIM"
     print(f"[SIGNAL] [{tag}] BET {direction} on {slug} "
-          f"(entry=${entry_price:.2f} [{entry_tier}], "
+          f"(src=${entry_price:.2f}, max=${max_price:.2f} [{entry_tier}], "
           f"bet=${stake:.2f}, bias={bias:.0%}, {trade_count} trades)")
 
     # Only record bets that were actually placed on Polymarket
     if mode != "live" or not order_resp:
         return
 
-    payout_multiplier = round(1.0 / entry_price, 2) if entry_price > 0 else 0
+    # Use max_price as recorded entry — closest estimate to actual fill price
+    # (CLOB API doesn't return fill price; Bonereaper's entry would be misleading)
+    fill_estimate = max_price
+    payout_multiplier = round(1.0 / fill_estimate, 2) if fill_estimate > 0 else 0
     bet_record = {
         "event_slug": slug,
         "direction": direction.lower(),
-        "contract_price": entry_price,
+        "contract_price": fill_estimate,
         "payout_multiplier": payout_multiplier,
         "stake_usd": stake,
         "strategy": "signal",
         "source_wallet": "signal",
         "source_name": "Signal",
+        "source_entry": entry_price,  # Bonereaper's entry for reference
         "slug": slug,
         "title": slug,
         "outcome": "pending",
