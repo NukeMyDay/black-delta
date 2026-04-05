@@ -17,7 +17,10 @@ import time
 from datetime import datetime, timezone
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, AssetType, BalanceAllowanceParams, MarketOrderArgs, OrderType
+from py_clob_client.clob_types import (
+    ApiCreds, AssetType, BalanceAllowanceParams, MarketOrderArgs,
+    OrderType, PartialCreateOrderOptions,
+)
 from py_clob_client.order_builder.constants import BUY
 
 
@@ -76,7 +79,16 @@ class Executor:
             # Verify credentials with a lightweight call
             self.client.get_api_keys()
             self.enabled = True
-            print("[EXEC] Executor initialized — LIVE trading enabled")
+            signer_addr = self.client.signer.address()
+            funder_addr = self.client.builder.funder
+            sig_type = self.client.builder.sig_type
+            print(f"[EXEC] Executor initialized — LIVE trading enabled")
+            print(f"[EXEC]   Signer:  {signer_addr}")
+            print(f"[EXEC]   Funder:  {funder_addr}")
+            print(f"[EXEC]   SigType: {sig_type} ({'EOA' if sig_type == 0 else 'POLY_PROXY' if sig_type == 1 else 'GNOSIS_SAFE' if sig_type == 2 else 'unknown'})")
+            if signer_addr == funder_addr and sig_type == 2:
+                print(f"[EXEC]   WARNING: sig_type=2 (GNOSIS_SAFE) but funder==signer.")
+                print(f"[EXEC]   Set POLY_FUNDER_ADDRESS to your proxy wallet if orders fail.")
             return True
         except Exception as e:
             print(f"[EXEC] Initialization failed: {e}")
@@ -110,14 +122,25 @@ class Executor:
 
         with self._lock:
             try:
-                order = self.client.create_market_order(
-                    MarketOrderArgs(
-                        token_id=token_id,
-                        side=BUY,
-                        amount=round(amount_usd, 2),
-                        price=max_price,
-                    )
+                args = MarketOrderArgs(
+                    token_id=token_id,
+                    side=BUY,
+                    amount=round(amount_usd, 2),
+                    price=max_price,
                 )
+                options = PartialCreateOrderOptions(
+                    tick_size=tick_size,
+                    neg_risk=neg_risk if neg_risk else None,
+                )
+                print(
+                    f"[EXEC] Creating order: amount=${amount_usd:.2f}, "
+                    f"price={max_price:.4f}, neg_risk={neg_risk}, "
+                    f"tick_size={tick_size}, "
+                    f"funder={self.client.builder.funder}, "
+                    f"signer={self.client.signer.address()}, "
+                    f"sig_type={self.client.builder.sig_type}"
+                )
+                order = self.client.create_market_order(args, options)
                 resp = self.client.post_order(order, OrderType.FOK)
 
                 order_record = {
