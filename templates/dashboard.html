@@ -978,7 +978,7 @@ function renderSignals(sig) {
     const dir = s.direction || '';
     const dirClass = dir === 'up' ? 'win' : 'lose';
     const outcome = s.outcome || 'pending';
-    const outcomeClass = outcome === 'win' ? 'win' : outcome === 'lose' ? 'lose' : 'pending';
+    const outcomeClass = (outcome === 'win' || outcome === 'correct') ? 'win' : (outcome === 'lose' || outcome === 'wrong') ? 'lose' : 'pending';
     const pnl = s.sim_pnl || 0;
     const pnlStr = outcome === 'pending' ? '--' : (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
     return `<tr>
