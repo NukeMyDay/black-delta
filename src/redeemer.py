@@ -17,8 +17,14 @@ from eth_abi import encode
 
 from src.polymarket import fetch_market, _parse_json_string
 
-# Polygon
-POLYGON_RPC = os.getenv("POLYGON_RPC", "https://polygon-rpc.com")
+# Polygon — fallback RPCs if env var not set or primary fails
+POLYGON_RPCS = [
+    os.getenv("POLYGON_RPC", ""),
+    "https://rpc.ankr.com/polygon",
+    "https://polygon.llamarpc.com",
+    "https://polygon-rpc.com",
+]
+POLYGON_RPCS = [r for r in POLYGON_RPCS if r]  # filter empty
 
 # Contracts
 CTF_ADDRESS = Web3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
@@ -92,11 +98,20 @@ class Redeemer:
         self._pending_slugs: dict[str, bool] = {}  # slug → neg_risk, awaiting on-chain resolution
 
     def initialize(self, private_key: str, signer: str, funder: str, sig_type: int) -> bool:
-        """Initialize web3 connection."""
+        """Initialize web3 connection, trying multiple RPCs."""
         try:
-            self.w3 = Web3(Web3.HTTPProvider(POLYGON_RPC, request_kwargs={"timeout": 10}))
-            if not self.w3.is_connected():
-                print("[REDEEM] Cannot connect to Polygon RPC")
+            connected = False
+            for rpc_url in POLYGON_RPCS:
+                try:
+                    self.w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+                    if self.w3.is_connected():
+                        print(f"[REDEEM] Connected to Polygon RPC: {rpc_url}")
+                        connected = True
+                        break
+                except Exception:
+                    continue
+            if not connected:
+                print(f"[REDEEM] Cannot connect to any Polygon RPC ({len(POLYGON_RPCS)} tried)")
                 return False
 
             self.private_key = private_key

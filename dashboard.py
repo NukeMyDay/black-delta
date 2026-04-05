@@ -416,14 +416,16 @@ def _balance_sync_loop(interval: int = 60):
                     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                     if state._daily_date != today or state._start_of_day_balance is None:
                         state._start_of_day_balance = balance
-                    # Keep peak tracking up to date
-                    if balance > state._peak_capital:
-                        state._peak_capital = balance
-                    # Append to PnL curve for chart (real balance, not internal tracking)
+                    # Portfolio = cash + pending position value (at cost)
+                    portfolio = state.portfolio_value
+                    # Keep peak tracking up to date (based on portfolio, not just cash)
+                    if portfolio > state._peak_capital:
+                        state._peak_capital = portfolio
+                    # Append to PnL curve for chart (portfolio value, not cash-only)
                     state.follow_pnl_curve.append({
                         "time": datetime.now(timezone.utc).isoformat(),
-                        "capital": round(balance, 2),
-                        "pnl": round(balance - state.base_capital, 2),
+                        "capital": round(portfolio, 2),
+                        "pnl": round(portfolio - state.base_capital, 2),
                     })
                     # Re-sync executor limits with updated capital
                     _sync_executor_limits()
@@ -444,11 +446,16 @@ async def dashboard():
 @app.get("/api/dashboard")
 async def api_dashboard():
     """Unified dashboard endpoint — single poll for all data."""
-    # Capital — balance from Polymarket, profit from resolved bets only
-    balance = state.polymarket_balance or state.betting_capital
+    # Capital — portfolio = cash + pending positions
+    cash = state.polymarket_balance if state.polymarket_balance is not None else state.betting_capital
+    portfolio = state.portfolio_value
+    pending_value = state.pending_stakes
     capital_data = {
         "base": state.base_capital,
-        "balance": round(balance, 2),
+        "portfolio": round(portfolio, 2),
+        "cash": round(cash, 2),
+        "pending_value": round(pending_value, 2),
+        "balance": round(portfolio, 2),  # backward compat
         "profit": round(state.follow_pnl, 2),
         "reserved": round(state.reserved, 2),
         "betting": round(state.betting_capital, 2),

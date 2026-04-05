@@ -404,9 +404,9 @@ body {
   <!-- Capital Overview -->
   <div class="capital-grid">
     <div class="card">
-      <div class="card-label">Polymarket Balance</div>
-      <div class="card-value" id="cap-betting" style="color:var(--accent)">$0.00</div>
-      <div class="card-sub">Friends: $<span id="cap-friends">0.00</span></div>
+      <div class="card-label">Portfolio</div>
+      <div class="card-value" id="cap-portfolio" style="color:var(--accent)">$0.00</div>
+      <div class="card-sub" id="portfolio-sub">Cash: $0 · Positions: $0</div>
     </div>
     <div class="card">
       <div class="card-label" id="profit-label">Profit</div>
@@ -698,12 +698,10 @@ poll();
 //  Render
 // ============================================================
 function render(d) {
-  // Capital
+  // Capital — portfolio = cash + pending positions
   const cap = d.capital;
-  setText('cap-betting', '$' + fmt(cap.betting));
-  // Friends' total invested
-  const friendsTotal = (d.investors || []).reduce((s, i) => s + i.current_value, 0);
-  setText('cap-friends', fmt(friendsTotal));
+  setText('cap-portfolio', '$' + fmt(cap.portfolio || cap.betting));
+  setText('portfolio-sub', `Cash: $${fmt(cap.cash || 0)} · Positions: $${fmt(cap.pending_value || 0)}`);
 
   // Range-filtered stats from resolved trades
   const cutoff = getTimeCutoff(chartRange);

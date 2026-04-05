@@ -61,8 +61,19 @@ class AppState:
     #  Capital properties
     # ------------------------------------------------------------------
     @property
+    def pending_stakes(self) -> float:
+        """Sum of stakes currently locked in unresolved bets."""
+        return sum(t.get("stake_usd", 0) for t in self.follow_trades if t.get("outcome") == "pending")
+
+    @property
+    def portfolio_value(self) -> float:
+        """Total portfolio: USDC cash + value of pending positions (at cost basis)."""
+        cash = self.polymarket_balance if self.polymarket_balance is not None else self.base_capital
+        return cash + self.pending_stakes
+
+    @property
     def betting_capital(self):
-        # Use live Polymarket balance if available, else fall back to base + P&L
+        # Use live Polymarket balance (cash only) for bet sizing to avoid over-leverage
         if self.polymarket_balance is not None:
             return self.polymarket_balance
         profit = self.follow_pnl
@@ -109,7 +120,7 @@ class AppState:
 
     @property
     def max_drawdown(self):
-        current = self.betting_capital
+        current = self.portfolio_value
         if self._peak_capital <= 0:
             return 0
         return round((1 - current / self._peak_capital) * 100, 2) if current < self._peak_capital else 0
