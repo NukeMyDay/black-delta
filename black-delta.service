@@ -5,11 +5,11 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/black-delta/pulse
+WorkingDirectory=/root/black-delta
 ExecStart=/usr/bin/python3 dashboard.py --port 3000
 Restart=always
 RestartSec=5
-EnvironmentFile=/root/black-delta/pulse/.env
+EnvironmentFile=/root/black-delta/.env
 
 [Install]
 WantedBy=multi-user.target

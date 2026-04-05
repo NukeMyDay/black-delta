@@ -19,7 +19,7 @@ echo "Auth configured for user: $AUTH_USER"
 
 # 3. Nginx config
 echo "[3/5] Configuring Nginx..."
-cp /root/black-delta/pulse/nginx-black-delta.conf /etc/nginx/sites-available/black-delta
+cp /root/black-delta/nginx-black-delta.conf /etc/nginx/sites-available/black-delta
 ln -sf /etc/nginx/sites-available/black-delta /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 
@@ -42,12 +42,12 @@ echo "[4/5] Getting SSL certificate..."
 certbot --nginx -d black-delta.net -d www.black-delta.net --non-interactive --agree-tos --email admin@black-delta.net
 
 # Restore full config with SSL
-cp /root/black-delta/pulse/nginx-black-delta.conf /etc/nginx/sites-available/black-delta
+cp /root/black-delta/nginx-black-delta.conf /etc/nginx/sites-available/black-delta
 nginx -t && systemctl reload nginx
 
 # 5. Start Black Delta
 echo "[5/5] Starting Black Delta..."
-cd /root/black-delta/pulse
+cd /root/black-delta
 cp .env.example .env
 echo ""
 echo ">>> Edit .env with your credentials: nano .env"
@@ -64,5 +64,5 @@ echo "Server IP: $(curl -s ifconfig.me)"
 echo ""
 echo "Next steps:"
 echo "  1. Point black-delta.net DNS (A-Record) to this IP"
-echo "  2. Edit .env: nano /root/black-delta/pulse/.env"
-echo "  3. Start: cd /root/black-delta/pulse && docker compose up -d --build"
+echo "  2. Edit .env: nano /root/black-delta/.env"
+echo "  3. Start: cd /root/black-delta && docker compose up -d --build"
