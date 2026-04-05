@@ -350,6 +350,16 @@ def _state_saver_loop(interval: int = 60):
             print(f"[STATE] Save failed: {e}")
 
 
+def _sync_executor_limits():
+    """Sync dynamic executor limits from current state (capital + risk level)."""
+    if not _executor:
+        return
+    # Max bet = 1 full Kelly fraction of capital (actual bets are much smaller via ⅛-Kelly)
+    _executor.max_bet_usd = round(state.betting_capital * state.kelly_fraction, 2)
+    # Daily loss limit = configured % of capital
+    _executor.daily_loss_limit = round(state.betting_capital * state.daily_loss_limit_pct / 100, 2)
+
+
 def _balance_sync_loop(interval: int = 60):
     """Background thread: sync live Polymarket USDC balance into state."""
     while True:
@@ -362,7 +372,11 @@ def _balance_sync_loop(interval: int = 60):
                     # Keep peak tracking up to date
                     if balance > state._peak_capital:
                         state._peak_capital = balance
-                    print(f"[BALANCE] Polymarket USDC: ${balance:.2f}")
+                    # Re-sync executor limits with updated capital
+                    _sync_executor_limits()
+                    print(f"[BALANCE] Polymarket USDC: ${balance:.2f} | "
+                          f"Max bet: ${_executor.max_bet_usd:.2f} | "
+                          f"Loss limit: ${_executor.daily_loss_limit:.2f}")
         except Exception as e:
             print(f"[BALANCE] Sync failed: {e}")
 
@@ -487,9 +501,9 @@ async def api_update_config(request: Request):
         state.kill_switch = bool(body["kill_switch"])
     if "daily_loss_limit_pct" in body:
         state.daily_loss_limit_pct = max(1, min(90, float(body["daily_loss_limit_pct"])))
-        # Sync absolute limit to executor
-        if _executor:
-            _executor.daily_loss_limit = state.betting_capital * state.daily_loss_limit_pct / 100
+
+    # Re-sync all executor limits whenever risk or loss limit changes
+    _sync_executor_limits()
 
     # Update signal module's capital if available
     if _signal:
@@ -750,15 +764,15 @@ def main():
     _executor = executor
     if executor.initialize():
         print("  Mode: LIVE TRADING")
-        print(f"  Max bet: ${executor.max_bet_usd} | Daily loss limit: ${executor.daily_loss_limit}")
-        # Sync loss limit from state's % setting
-        executor.daily_loss_limit = state.betting_capital * state.daily_loss_limit_pct / 100
-        # Fetch initial balance
+        # Fetch initial balance first so limits are based on real capital
         balance = executor.get_usdc_balance()
         if balance is not None:
             state.polymarket_balance = balance
             state._peak_capital = max(state._peak_capital, balance)
             print(f"  Polymarket Balance: ${balance:.2f}")
+        # Sync dynamic limits (max_bet and daily_loss_limit) from capital + risk level
+        _sync_executor_limits()
+        print(f"  Max bet: ${executor.max_bet_usd:.2f} | Daily loss limit: ${executor.daily_loss_limit:.2f}")
     else:
         print("  Mode: SIMULATION (set POLY_* env vars for live)")
 
