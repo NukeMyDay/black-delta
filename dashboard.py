@@ -573,7 +573,7 @@ async def api_signal_download(request: Request):
     if not _signal:
         return JSONResponse({"error": "signal module not initialized"}, status_code=500)
     fmt = request.query_params.get("format", "csv")
-    signals = list(_signal.signal_history)
+    signals = list(_signal.signals)
 
     if fmt == "json":
         return JSONResponse(signals, headers={

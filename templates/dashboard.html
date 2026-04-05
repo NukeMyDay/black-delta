@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BLACK DELTA</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230a0a0f'/><text x='3' y='23' font-family='Arial,sans-serif' font-weight='800' font-size='20' fill='white'>B</text><text x='16' y='23' font-family='Arial,sans-serif' font-weight='800' font-size='20' fill='%23818cf8'>D</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
@@ -528,9 +529,22 @@ input[type="range"]::-webkit-slider-thumb {
     <div class="card-label" style="margin-bottom:var(--spacing-sm)">Followed Wallets</div>
     <div class="table-scroll">
       <table class="data-table">
-        <thead><tr><th>Label</th><th>Address</th><th>Buys</th><th>Sells</th></tr></thead>
+        <thead><tr><th>Label</th><th>Address</th><th>Buys</th><th>Sells</th><th></th></tr></thead>
         <tbody id="wallets-body"></tbody>
       </table>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:var(--spacing-sm);align-items:end;flex-wrap:wrap">
+      <div style="flex:1;min-width:100px">
+        <div class="card-label">Wallet Address</div>
+        <input type="text" id="wallet-addr" placeholder="0x..."
+          style="width:100%;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:11px">
+      </div>
+      <div style="width:100px">
+        <div class="card-label">Label</div>
+        <input type="text" id="wallet-label" placeholder="Name"
+          style="width:100%;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font);font-size:12px">
+      </div>
+      <button onclick="addWallet()" style="padding:6px 14px;background:var(--accent);color:#000;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">+ Add</button>
     </div>
 
     <div style="display:flex;align-items:center;gap:12px;margin:var(--spacing-lg) 0 var(--spacing-sm)">
@@ -963,7 +977,36 @@ function renderFollow(d) {
     <td style="font-size:10px">${w.address.slice(0,6)}...${w.address.slice(-4)}</td>
     <td>${w.buys || 0}</td>
     <td>${w.sells || 0}</td>
+    <td><button onclick="removeWallet('${w.address}')" style="background:none;border:1px solid var(--border);color:var(--text-dim);padding:2px 6px;border-radius:3px;cursor:pointer;font-size:10px">x</button></td>
   </tr>`).join('');
+}
+
+async function addWallet() {
+  const address = document.getElementById('wallet-addr').value.trim();
+  const label = document.getElementById('wallet-label').value.trim();
+  if (!address || !address.startsWith('0x')) return alert('Enter a valid wallet address (0x...)');
+  const resp = await fetch('/api/follow/wallets', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ address, label: label || 'Unknown' })
+  });
+  const data = await resp.json();
+  if (data.error) { alert(data.error); return; }
+  document.getElementById('wallet-addr').value = '';
+  document.getElementById('wallet-label').value = '';
+  poll();
+}
+
+async function removeWallet(address) {
+  if (!confirm('Remove this wallet?')) return;
+  const resp = await fetch('/api/follow/wallets', {
+    method: 'DELETE',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ address })
+  });
+  const data = await resp.json();
+  if (data.error) alert(data.error);
+  poll();
 }
 
 // ============================================================

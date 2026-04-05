@@ -25,7 +25,7 @@ class AppState:
         self.reinvest_rate = 0.80   # 0-1
         self.risk_level = 5         # 1-10, maps to Kelly fraction
         self.signal_pct = 100       # 0-100
-        self.kill_switch = False
+        self.kill_switch = True     # Paused by default — must be activated manually
 
         # Investors (friends only — owner is not listed)
         self.investors: list[dict] = []
@@ -457,6 +457,7 @@ class AppState:
                 "risk_level": self.risk_level,
                 "signal_pct": self.signal_pct,
                 "peak_capital": self._peak_capital,
+                "kill_switch": self.kill_switch,
                 "investors": self.investors,
                 "saved_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -496,6 +497,8 @@ class AppState:
             self.risk_level = data.get("risk_level", self.risk_level)
             self.signal_pct = data.get("signal_pct", self.signal_pct)
             self._peak_capital = data.get("peak_capital", self._peak_capital)
+            if "kill_switch" in data:
+                self.kill_switch = data["kill_switch"]
 
             # Investors — friends only, strip legacy "Owner" entry if present
             investors = data.get("investors", [])
