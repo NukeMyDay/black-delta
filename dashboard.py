@@ -472,7 +472,7 @@ async def api_update_config(request: Request):
     if "kill_switch" in body:
         state.kill_switch = bool(body["kill_switch"])
     if "daily_loss_limit_pct" in body:
-        state.daily_loss_limit_pct = max(1, min(100, float(body["daily_loss_limit_pct"])))
+        state.daily_loss_limit_pct = max(1, min(90, float(body["daily_loss_limit_pct"])))
         # Sync absolute limit to executor
         if _executor:
             _executor.daily_loss_limit = state.betting_capital * state.daily_loss_limit_pct / 100
