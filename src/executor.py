@@ -202,7 +202,7 @@ class Executor:
                     f"sig_type={self.client.builder.sig_type}"
                 )
                 order = self.client.create_market_order(args, options)
-                resp = self.client.post_order(order, OrderType.FOK)
+                resp = self.client.post_order(order, OrderType.FAK)
 
                 order_record = {
                     "token_id": token_id,
