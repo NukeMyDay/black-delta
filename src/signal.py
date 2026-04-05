@@ -17,9 +17,9 @@ Strategy (Scout + Flip Detection + Entry-Price Sizing):
      - If flipped -> suppress signal (bias was unstable)
      - If stable -> compute entry price, size bet accordingly
   3. Entry-price-based Kelly sizing:
-     - avg_entry < 0.60: full Quarter-Kelly (best EV)
-     - 0.60 <= avg_entry < 0.70: half Quarter-Kelly (marginal EV)
-     - avg_entry >= 0.70: skip (zero/negative EV at 70% win rate)
+     - avg_entry < 0.45: full ⅛-Kelly (best EV, contrarian)
+     - 0.45 <= avg_entry < 0.55: half ⅛-Kelly (moderate EV)
+     - avg_entry >= 0.55: skip (edge evaporates after slippage)
 
   Result: 1 signal per window max. Direction flips = no bet.
 """
@@ -32,13 +32,14 @@ from datetime import datetime, timezone
 
 # --- Bet Sizing (all overridable via .env) ---
 # Separate win rates per tier (empirical from 47 signals):
-#   Full tier (entry < 0.60): 55% accuracy — contrarian bets
-#   Half tier (0.60-0.70):    83% accuracy — consensus confirmation
+#   Full tier (entry < 0.45): 57% accuracy — contrarian bets, best EV
+#   Half tier (0.45-0.55):    75% accuracy — moderate conviction
+#   Skip (>= 0.55):          No bet — edge evaporates after slippage
 WIN_RATE_FULL = float(os.getenv("SIGNAL_WIN_RATE_FULL", "0.57"))
 WIN_RATE_HALF = float(os.getenv("SIGNAL_WIN_RATE_HALF", "0.75"))
 KELLY_SAFETY = float(os.getenv("SIGNAL_KELLY_FRACTION", "0.125"))  # ⅛-Kelly (conservative for €1k)
-ENTRY_FULL = float(os.getenv("SIGNAL_ENTRY_FULL", "0.60"))
-ENTRY_HALF = float(os.getenv("SIGNAL_ENTRY_HALF", "0.70"))
+ENTRY_FULL = float(os.getenv("SIGNAL_ENTRY_FULL", "0.45"))
+ENTRY_HALF = float(os.getenv("SIGNAL_ENTRY_HALF", "0.55"))
 SIM_START_CAPITAL = float(os.getenv("SIGNAL_START_CAPITAL", "1000.0"))
 
 # --- Scout + Bet Thresholds ---
@@ -460,9 +461,9 @@ class SignalAggregator:
 
         Returns (entry_tier, bet_pct, bet_usd).
         Each tier uses its own empirical win rate for Kelly calculation:
-          "full"  (entry < 0.60): WIN_RATE_FULL (57%) — contrarian, lower accuracy
-          "half"  (0.60-0.70):    WIN_RATE_HALF (75%) — consensus, higher accuracy
-          "skip"  (>= 0.70):     no bet
+          "full"  (entry < 0.45): WIN_RATE_FULL (57%) — contrarian, best EV
+          "half"  (0.45-0.55):    WIN_RATE_HALF (75%) — moderate conviction
+          "skip"  (>= 0.55):     no bet — edge evaporates after slippage
         """
         if avg_entry_price >= ENTRY_HALF:
             return "skip", 0.0, 0.0
