@@ -837,6 +837,8 @@ def main():
         funder = executor.client.builder.funder
         sig_type = executor.client.builder.sig_type
         redeemer.initialize(private_key, signer, funder, sig_type)
+        # Queue any previously resolved positions for redemption
+        redeemer.queue_resolved_trades(state.follow_trades)
     else:
         print("  Mode: SIMULATION (set POLY_* env vars for live)")
 

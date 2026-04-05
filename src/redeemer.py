@@ -121,14 +121,28 @@ class Redeemer:
             print(f"[REDEEM] Init failed: {e}")
             return False
 
+    def queue_resolved_trades(self, trades):
+        """Scan trade list on startup and queue all resolved slugs for redemption."""
+        seen = set()
+        queued = 0
+        for t in trades:
+            if t.get("outcome") in ("win", "lose") and t.get("event_slug"):
+                slug = t["event_slug"]
+                if slug not in seen:
+                    seen.add(slug)
+                    self.queue_redeem(slug)
+                    queued += 1
+        if queued:
+            print(f"[REDEEM] Startup: queued {queued} resolved slugs for redemption")
+
     def get_condition_id(self, slug: str) -> str | None:
         """Get conditionId for a market from Gamma API."""
         try:
             market = fetch_market(slug)
             if market and market.get("conditionId"):
                 return market["conditionId"]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[REDEEM] conditionId lookup failed for {slug}: {e}")
         return None
 
     def is_resolved(self, condition_id: str) -> bool:
@@ -141,8 +155,36 @@ class Redeemer:
         except Exception:
             return False
 
+    def _try_redeem_target(self, condition_id: str, cid_bytes: bytes, target: str, label: str) -> bool:
+        """Attempt redemption against a specific contract target."""
+        ctf = self.w3.eth.contract(address=target, abi=CTF_ABI)
+        redeem_data = ctf.encodeABI(
+            fn_name="redeemPositions",
+            args=[USDC_ADDRESS, ZERO_BYTES32, cid_bytes, [1, 2]],
+        )
+
+        if self.sig_type == 0:
+            tx = self._build_eoa_tx(target, redeem_data)
+        else:
+            tx = self._build_safe_tx(target, redeem_data)
+
+        if not tx:
+            return False
+
+        signed = self.w3.eth.account.sign_transaction(tx, self.private_key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+
+        if receipt.status == 1:
+            self._redeemed.add(condition_id)
+            print(f"[REDEEM] OK via {label}: {condition_id[:16]}... tx={tx_hash.hex()[:16]}...")
+            return True
+        else:
+            print(f"[REDEEM] TX reverted via {label}: {condition_id[:16]}...")
+            return False
+
     def redeem(self, condition_id: str, neg_risk: bool = False) -> bool:
-        """Redeem positions for a resolved condition."""
+        """Redeem positions for a resolved condition. Tries both CTF and NegRiskAdapter."""
         if not self.enabled or not self.w3:
             return False
 
@@ -151,40 +193,20 @@ class Redeemer:
 
         cid_bytes = bytes.fromhex(condition_id.replace("0x", ""))
 
-        # Build redeemPositions calldata
-        target = NEG_RISK_ADAPTER if neg_risk else CTF_ADDRESS
-        ctf = self.w3.eth.contract(address=target, abi=CTF_ABI)
-        redeem_data = ctf.encodeABI(
-            fn_name="redeemPositions",
-            args=[USDC_ADDRESS, ZERO_BYTES32, cid_bytes, [1, 2]],
-        )
+        # Try preferred target first, then fallback to the other
+        targets = [
+            (NEG_RISK_ADAPTER, "NegRisk") if neg_risk else (CTF_ADDRESS, "CTF"),
+            (CTF_ADDRESS, "CTF") if neg_risk else (NEG_RISK_ADAPTER, "NegRisk"),
+        ]
 
-        try:
-            if self.sig_type == 0:
-                # EOA: send tx directly from signer
-                tx = self._build_eoa_tx(target, redeem_data)
-            else:
-                # GNOSIS_SAFE: execute through the Safe proxy
-                tx = self._build_safe_tx(target, redeem_data)
+        for target, label in targets:
+            try:
+                if self._try_redeem_target(condition_id, cid_bytes, target, label):
+                    return True
+            except Exception as e:
+                print(f"[REDEEM] {label} failed: {e}")
 
-            if not tx:
-                return False
-
-            signed = self.w3.eth.account.sign_transaction(tx, self.private_key)
-            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
-
-            if receipt.status == 1:
-                self._redeemed.add(condition_id)
-                print(f"[REDEEM] OK: {condition_id[:16]}... tx={tx_hash.hex()[:16]}...")
-                return True
-            else:
-                print(f"[REDEEM] TX reverted: {condition_id[:16]}...")
-                return False
-
-        except Exception as e:
-            print(f"[REDEEM] Failed: {e}")
-            return False
+        return False
 
     def _build_eoa_tx(self, to: str, data: bytes) -> dict | None:
         """Build a direct transaction from the signer."""
