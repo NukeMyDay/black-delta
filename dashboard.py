@@ -194,14 +194,14 @@ def handle_follow_trade(trade_data: dict):
         token_id = trade_data.get("asset", "")
         if token_id:
             stake = _executor.cap_amount(stake)
-            slippage = 0.08
+            slippage = 0.10
             max_price = min(price + slippage, 0.95)
-            # Hard cap: never pay more than 55¢ — beyond this, edge evaporates
-            if max_price > 0.55:
-                max_price = 0.55
+            # Hard cap: never pay more than 62¢ — at 65% real WR, breakeven is ~65¢
+            if max_price > 0.62:
+                max_price = 0.62
             # If source entry is already above cap, skip entirely
-            if price > 0.55:
-                print(f"[FOLLOW] Entry ${price:.2f} > $0.55 cap — SKIP")
+            if price > 0.60:
+                print(f"[FOLLOW] Entry ${price:.2f} > $0.60 cap — SKIP")
                 return
             market_info = _executor.get_market_info(token_id)
             order_resp = _executor.place_market_buy(
@@ -298,14 +298,14 @@ def _handle_signal(signal: dict):
     token_id = signal.get("token_id", "")
     if is_live and _executor and token_id and stake >= 0.50:
         stake = _executor.cap_amount(stake)
-        slippage = 0.08
+        slippage = 0.10
         max_price = min(entry_price + slippage, 0.95)
-        # Hard cap: never pay more than 55¢ — beyond this, edge evaporates
-        if max_price > 0.55:
-            max_price = 0.55
+        # Hard cap: never pay more than 62¢ — at 65% real WR, breakeven is ~65¢
+        if max_price > 0.62:
+            max_price = 0.62
         # If signal entry is already above cap, skip entirely
-        if entry_price > 0.55:
-            print(f"[SIGNAL] Entry ${entry_price:.2f} > $0.55 cap — SKIP")
+        if entry_price > 0.60:
+            print(f"[SIGNAL] Entry ${entry_price:.2f} > $0.60 cap — SKIP")
             return
         market_info = _executor.get_market_info(token_id)
         order_resp = _executor.place_market_buy(

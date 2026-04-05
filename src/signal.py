@@ -38,8 +38,8 @@ from datetime import datetime, timezone
 WIN_RATE_FULL = float(os.getenv("SIGNAL_WIN_RATE_FULL", "0.57"))
 WIN_RATE_HALF = float(os.getenv("SIGNAL_WIN_RATE_HALF", "0.75"))
 KELLY_SAFETY = float(os.getenv("SIGNAL_KELLY_FRACTION", "0.125"))  # ⅛-Kelly (conservative for €1k)
-ENTRY_FULL = float(os.getenv("SIGNAL_ENTRY_FULL", "0.45"))
-ENTRY_HALF = float(os.getenv("SIGNAL_ENTRY_HALF", "0.55"))
+ENTRY_FULL = float(os.getenv("SIGNAL_ENTRY_FULL", "0.50"))
+ENTRY_HALF = float(os.getenv("SIGNAL_ENTRY_HALF", "0.62"))
 SIM_START_CAPITAL = float(os.getenv("SIGNAL_START_CAPITAL", "1000.0"))
 
 # --- Scout + Bet Thresholds ---
