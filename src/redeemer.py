@@ -12,6 +12,7 @@ Requires a small amount of MATIC on the signer EOA for gas.
 import os
 import time
 import threading
+import requests as _requests
 from web3 import Web3
 from eth_abi import encode
 
@@ -20,11 +21,42 @@ from src.polymarket import fetch_market, _parse_json_string
 # Polygon — fallback RPCs if env var not set or primary fails
 POLYGON_RPCS = [
     os.getenv("POLYGON_RPC", ""),
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://1rpc.io/matic",
     "https://rpc.ankr.com/polygon",
     "https://polygon.llamarpc.com",
     "https://polygon-rpc.com",
+    "https://polygon.drpc.org",
+    "https://polygon.meowrpc.com",
+    "https://polygon-mainnet.public.blastapi.io",
 ]
 POLYGON_RPCS = [r for r in POLYGON_RPCS if r]  # filter empty
+
+
+def _test_rpc_raw(url: str, timeout: int = 20) -> tuple[bool, str]:
+    """Test an RPC endpoint with a raw HTTP POST (bypasses Web3 layer).
+    Returns (success, detail_message)."""
+    try:
+        resp = _requests.post(
+            url,
+            json={"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1},
+            timeout=timeout,
+            headers={"Content-Type": "application/json"},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            chain_id = data.get("result", "unknown")
+            return True, f"status=200 chainId={chain_id}"
+        else:
+            return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except _requests.exceptions.ConnectionError as e:
+        return False, f"ConnectionError: {e}"
+    except _requests.exceptions.Timeout:
+        return False, f"Timeout after {timeout}s"
+    except _requests.exceptions.SSLError as e:
+        return False, f"SSLError: {e}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 # Contracts
 CTF_ADDRESS = Web3.to_checksum_address("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
@@ -100,40 +132,51 @@ class Redeemer:
     def initialize(self, private_key: str, signer: str, funder: str, sig_type: int) -> bool:
         """Initialize web3 connection, trying multiple RPCs."""
         try:
-            connected = False
-            for rpc_url in POLYGON_RPCS:
-                try:
-                    self.w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
-                    if self.w3.is_connected():
-                        print(f"[REDEEM] Connected to Polygon RPC: {rpc_url}")
-                        connected = True
-                        break
-                except Exception:
-                    continue
-            if not connected:
-                print(f"[REDEEM] Cannot connect to any Polygon RPC ({len(POLYGON_RPCS)} tried)")
-                return False
-
             self.private_key = private_key
             self.signer_address = Web3.to_checksum_address(signer)
             self.funder_address = Web3.to_checksum_address(funder)
             self.sig_type = sig_type
 
-            # Check MATIC balance for gas
-            balance = self.w3.eth.get_balance(self.signer_address)
-            matic = self.w3.from_wei(balance, "ether")
-            if matic < 0.001:
-                print(f"[REDEEM] WARNING: Signer has {matic:.4f} MATIC — need ~0.01 for gas")
-                print(f"[REDEEM]   Send MATIC to: {self.signer_address}")
-                # Still enable — balance might increase later
-            else:
-                print(f"[REDEEM] Signer MATIC balance: {matic:.4f}")
+            # Phase 1: Raw HTTP test to diagnose connectivity
+            print(f"[REDEEM] Testing {len(POLYGON_RPCS)} Polygon RPCs...")
+            working_rpc = None
+            for rpc_url in POLYGON_RPCS:
+                ok, detail = _test_rpc_raw(rpc_url)
+                if ok:
+                    print(f"[REDEEM] ✓ {rpc_url} — {detail}")
+                    working_rpc = rpc_url
+                    break
+                else:
+                    print(f"[REDEEM] ✗ {rpc_url} — {detail}")
 
+            # Phase 2: Initialize Web3 with working RPC
+            if working_rpc:
+                self.w3 = Web3(Web3.HTTPProvider(working_rpc, request_kwargs={"timeout": 20}))
+                if self.w3.is_connected():
+                    chain_id = self.w3.eth.chain_id
+                    print(f"[REDEEM] Web3 connected (chainId={chain_id})")
+
+                    # Check MATIC balance for gas
+                    balance = self.w3.eth.get_balance(self.signer_address)
+                    matic = self.w3.from_wei(balance, "ether")
+                    if matic < 0.001:
+                        print(f"[REDEEM] WARNING: Signer has {matic:.4f} MATIC — need ~0.01 for gas")
+                        print(f"[REDEEM]   Send MATIC to: {self.signer_address}")
+                    else:
+                        print(f"[REDEEM] Signer MATIC balance: {matic:.4f}")
+                else:
+                    print(f"[REDEEM] Web3 is_connected=False despite raw test passing")
+            else:
+                print(f"[REDEEM] All {len(POLYGON_RPCS)} RPCs failed — check network/DNS from container")
+
+            # Always enable queuing — sweep loop retries RPC
             self.enabled = True
-            print("[REDEEM] Auto-redeem initialized")
+            print(f"[REDEEM] Auto-redeem {'initialized' if self.w3 and self.w3.is_connected() else 'queuing only (will retry RPC)'}")
             return True
         except Exception as e:
-            print(f"[REDEEM] Init failed: {e}")
+            print(f"[REDEEM] Init failed: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def queue_resolved_trades(self, trades):
@@ -297,9 +340,33 @@ class Redeemer:
             self._pending_slugs[slug] = neg_risk
             print(f"[REDEEM] Queued: {slug}")
 
+    def _ensure_rpc(self) -> bool:
+        """Ensure we have an active RPC connection, retry if needed."""
+        if self.w3:
+            try:
+                if self.w3.is_connected():
+                    return True
+            except Exception:
+                pass
+        for rpc_url in POLYGON_RPCS:
+            ok, detail = _test_rpc_raw(rpc_url, timeout=15)
+            if not ok:
+                continue
+            try:
+                self.w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 20}))
+                if self.w3.is_connected():
+                    print(f"[REDEEM] Reconnected: {rpc_url}")
+                    return True
+            except Exception:
+                continue
+        return False
+
     def sweep_pending(self):
         """Try to redeem all queued slugs. Called periodically by background loop."""
         if not self.enabled or not self._pending_slugs:
+            return
+        if not self._ensure_rpc():
+            print(f"[REDEEM] Sweep: no RPC available ({len(self._pending_slugs)} slugs pending)")
             return
         done = []
         for slug, neg_risk in list(self._pending_slugs.items()):
