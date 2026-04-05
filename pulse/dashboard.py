@@ -717,6 +717,38 @@ async def api_signal():
     return JSONResponse({"error": "signal module not initialized"})
 
 
+@app.get("/api/signal/download")
+async def api_signal_download(request: Request):
+    """Download full signal history as CSV or JSON."""
+    if not _signal:
+        return JSONResponse({"error": "signal module not initialized"}, status_code=500)
+    fmt = request.query_params.get("format", "csv")
+    signals = list(_signal.signal_history)
+
+    if fmt == "json":
+        return JSONResponse(signals, headers={
+            "Content-Disposition": "attachment; filename=signal_history.json"
+        })
+
+    # CSV
+    if not signals:
+        return Response("No signals", media_type="text/csv")
+    cols = ["time", "slug", "direction", "avg_entry_price", "entry_tier",
+            "outcome", "sim_pnl", "suggested_bet_usd", "bias",
+            "total_usdc", "trade_count", "confidence",
+            "scout_direction", "market_winner"]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    writer.writeheader()
+    for s in signals:
+        writer.writerow(s)
+    return Response(
+        buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=signal_history.csv"},
+    )
+
+
 @app.patch("/api/signal/config")
 async def api_signal_config(request: Request):
     """Update signal config at runtime."""

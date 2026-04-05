@@ -396,6 +396,13 @@ class SignalAggregator:
                   f"${avg_entry_price:.2f} >= ${ENTRY_HALF:.2f} — NO BET")
             return None
 
+        if suggested_bet_usd < 1.0:
+            win.skip_reason = "no_edge"
+            self.total_skips += 1
+            print(f"[SIGNAL] NO KELLY EDGE on {win.slug}: "
+                  f"${avg_entry_price:.2f} @ {entry_tier} → $0 bet — SKIP")
+            return None
+
         # --- Emit signal ---
         win.bet_emitted = True
         win.signal_direction = direction
