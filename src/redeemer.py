@@ -258,9 +258,24 @@ class Redeemer:
                 self._nonce = None
                 print(f"[REDEEM] {label}: nonce too low, resyncing")
                 return False
+            if "in-flight transaction limit" in err_msg or "delegated" in err_msg:
+                print(f"[REDEEM] {label}: delegated account limit — pause 30s")
+                time.sleep(30)
+                self._nonce = None
+                return False
+            if "gapped-nonce" in err_msg:
+                print(f"[REDEEM] {label}: gapped nonce — resyncing")
+                self._nonce = None
+                return False
             raise
 
-        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        try:
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        except Exception as timeout_err:
+            # TX sent but not mined — it's stuck in mempool, don't proceed with more TXs
+            print(f"[REDEEM] {label}: TX {tx_hash.hex()[:16]}... not confirmed in 60s — stuck in mempool")
+            # This nonce is consumed (TX is pending), but don't send more until it clears
+            raise  # Let sweep_pending catch this and stop
 
         if receipt.status == 1:
             self._redeemed.add(condition_id)
@@ -391,35 +406,46 @@ class Redeemer:
         return False
 
     def _cancel_single_nonce(self, nonce: int) -> bool:
-        """Send a 0-value self-transfer to replace a stuck TX at a specific nonce."""
+        """Send a 0-value transfer to replace a stuck TX at a specific nonce.
+
+        Uses a burn address as target (not self) and high gas limit to handle
+        delegated/EIP-7702 accounts where self-transfer may revert with 21k gas.
+        """
+        BURN_ADDR = "0x000000000000000000000000000000000000dEaD"
         try:
             gas_price = self.w3.eth.gas_price
             replace_gas = min(gas_price * 10, self.w3.to_wei(500, "gwei"))
             cancel_tx = {
-                "to": self.signer_address,
+                "to": Web3.to_checksum_address(BURN_ADDR),
                 "value": 0,
                 "data": b"",
                 "nonce": nonce,
-                "gas": 21_000,
+                "gas": 100_000,  # 100k — handles delegated/smart accounts
                 "gasPrice": replace_gas,
                 "chainId": 137,
             }
             signed = self.w3.eth.account.sign_transaction(cancel_tx, self.private_key)
             tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-            print(f"[REDEEM] Cancel TX for nonce {nonce}: {tx_hash.hex()[:16]}... (gasPrice={replace_gas})")
+            print(f"[REDEEM] Cancel TX for nonce {nonce}: {tx_hash.hex()[:16]}... "
+                  f"(gasPrice={self.w3.from_wei(replace_gas, 'gwei'):.0f} gwei)")
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=45)
             if receipt.status == 1:
-                print(f"[REDEEM] ✓ Nonce {nonce} unblocked")
+                print(f"[REDEEM] ✓ Nonce {nonce} unblocked (gas used: {receipt.gasUsed})")
                 return True
             else:
-                print(f"[REDEEM] ✗ Cancel TX reverted for nonce {nonce}")
+                print(f"[REDEEM] ✗ Cancel TX reverted for nonce {nonce} "
+                      f"(gas used: {receipt.gasUsed}/{cancel_tx['gas']})")
                 return False
         except Exception as e:
             err = str(e)
             if "nonce too low" in err:
                 print(f"[REDEEM] Nonce {nonce} already cleared on-chain")
                 return True
-            print(f"[REDEEM] Cancel nonce {nonce} failed: {err[:80]}")
+            if "in-flight transaction limit" in err or "delegated" in err:
+                print(f"[REDEEM] Nonce {nonce}: delegated account limit — waiting 30s")
+                time.sleep(30)
+                return False
+            print(f"[REDEEM] Cancel nonce {nonce} failed: {err[:120]}")
             return False
 
     def _clear_stuck_nonces(self) -> bool:
@@ -444,43 +470,46 @@ class Redeemer:
         print(f"[REDEEM] Detected {stuck_count} stuck TX(s) in mempool "
               f"(confirmed nonce={confirmed}, pending nonce={pending})")
 
-        # Replace each stuck nonce with a 0-value self-transfer at high gas
+        # Replace each stuck nonce with a 0-value burn-addr transfer at high gas
+        # Uses burn addr (not self) + 100k gas to handle delegated/EIP-7702 accounts
+        BURN_ADDR = Web3.to_checksum_address("0x000000000000000000000000000000000000dEaD")
         gas_price = self.w3.eth.gas_price
-        # Use 5x current gas price (capped at 300 gwei) to ensure replacement
         replace_gas_price = min(gas_price * 5, self.w3.to_wei(300, "gwei"))
 
         cleared = 0
         for nonce in range(confirmed, pending):
             try:
                 cancel_tx = {
-                    "to": self.signer_address,  # send to self
+                    "to": BURN_ADDR,
                     "value": 0,
                     "data": b"",
                     "nonce": nonce,
-                    "gas": 21_000,  # minimum gas for simple transfer
+                    "gas": 100_000,
                     "gasPrice": replace_gas_price,
                     "chainId": 137,
                 }
                 signed = self.w3.eth.account.sign_transaction(cancel_tx, self.private_key)
                 tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-                print(f"[REDEEM] Cancel TX sent for nonce {nonce}: {tx_hash.hex()[:16]}...")
+                print(f"[REDEEM] Cancel TX sent for nonce {nonce}: {tx_hash.hex()[:16]}... "
+                      f"({self.w3.from_wei(replace_gas_price, 'gwei'):.0f} gwei)")
 
-                # Wait for confirmation (up to 45s per TX)
                 receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=45)
                 if receipt.status == 1:
                     cleared += 1
                     print(f"[REDEEM] ✓ Nonce {nonce} cleared (gas used: {receipt.gasUsed})")
                 else:
-                    print(f"[REDEEM] ✗ Cancel TX reverted for nonce {nonce}")
+                    print(f"[REDEEM] ✗ Cancel TX reverted for nonce {nonce} "
+                          f"(gas used: {receipt.gasUsed}/{cancel_tx['gas']})")
             except Exception as e:
                 err_msg = str(e)
                 if "nonce too low" in err_msg:
-                    # Already mined — that's fine
                     cleared += 1
                     print(f"[REDEEM] Nonce {nonce} already confirmed on-chain")
                 elif "already known" in err_msg:
-                    # Our replacement didn't outbid — try even higher gas next sweep
                     print(f"[REDEEM] Nonce {nonce}: replacement still underpriced, will retry")
+                elif "in-flight transaction limit" in err_msg or "delegated" in err_msg:
+                    print(f"[REDEEM] Delegated account limit hit — stopping, will retry next sweep")
+                    break
                 else:
                     print(f"[REDEEM] Nonce {nonce} cancel failed: {err_msg[:80]}")
 
@@ -500,33 +529,41 @@ class Redeemer:
             return
 
         # Step 0: Clear any stuck mempool transactions before redeeming
-        self._clear_stuck_nonces()
+        stuck_cleared = self._clear_stuck_nonces()
+        if not stuck_cleared:
+            # Still have stuck TXs — don't attempt redeems, they'll just pile up
+            print(f"[REDEEM] Sweep: stuck nonces not cleared, skipping redeem attempts")
+            return
 
         # Reset local nonce from chain at start of each sweep
         self._nonce = None
 
         slugs = list(self._pending_slugs.items())
-        print(f"[REDEEM] Sweep: processing {len(slugs)} pending slugs...")
+        # Only try a few per sweep to avoid in-flight limits on delegated accounts
+        max_per_sweep = 3
+        batch = slugs[:max_per_sweep]
+        print(f"[REDEEM] Sweep: trying {len(batch)}/{len(slugs)} pending slugs...")
         done = []
         errors = 0
-        for slug, neg_risk in slugs:
+        for slug, neg_risk in batch:
             try:
                 result = self.try_redeem_slug(slug, neg_risk)
                 if result:
                     done.append(slug)
-                    time.sleep(2)  # wait for TX to propagate before next
+                    time.sleep(5)  # longer wait for delegated accounts
                 else:
                     errors += 1
-                    if errors >= 3:
+                    if errors >= 2:
                         # Too many failures, likely nonce issues — stop and retry next sweep
                         print(f"[REDEEM] Sweep: {errors} failures, stopping early")
                         break
             except Exception as e:
-                print(f"[REDEEM] Sweep error for {slug}: {e}")
+                print(f"[REDEEM] Sweep error for {slug}: {type(e).__name__}: {str(e)[:80]}")
                 self._nonce = None
                 errors += 1
-                if errors >= 3:
-                    break
+                # Any exception = stop immediately (likely stuck TX or timeout)
+                print(f"[REDEEM] Sweep: stopping after exception")
+                break
         for slug in done:
             self._pending_slugs.pop(slug, None)
         if done or errors:
