@@ -528,6 +528,25 @@ body {
       3. <strong>Kelly Bet</strong> — size the bet based on entry price (cheaper = higher payout, riskier)
     </div>
 
+    <div class="capital-grid" id="signal-kpi-grid" style="margin-bottom:var(--spacing-md)">
+      <div class="card">
+        <div class="card-label">Win Rate</div>
+        <div class="card-value" id="signal-wr">--</div>
+      </div>
+      <div class="card">
+        <div class="card-label">ROI (Sim)</div>
+        <div class="card-value" id="signal-roi">--</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Resolved</div>
+        <div class="card-value" id="signal-resolved">0</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Pending</div>
+        <div class="card-value" id="signal-pending">0</div>
+      </div>
+    </div>
+
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:var(--spacing-sm)">
       <div class="card-label" style="margin:0">Signal History</div>
       <span id="signal-stats" style="font-size:11px;color:var(--text-dim)"></span>
@@ -866,8 +885,8 @@ function initChart() {
   pnlChart = new Chart(ctx, {
     type: 'line',
     data: { datasets: [
-      mk('Follow', '#4ade80', [], 2),
-      mk('Follow (sim)', 'rgba(255,255,255,0.25)', [], 1),
+      mk('Live', '#4ade80', [], 2),
+      mk('Signal (sim)', 'rgba(255,255,255,0.35)', [], 1),
       mk('Baseline', 'rgba(255,255,255,0.2)', [6,4], 1),
     ]},
     options: {
@@ -926,15 +945,26 @@ function renderChart(d) {
 
   pnlChart.data.datasets[0].data = points;
 
+  // Signal sim curve (dataset[1])
+  const sigData = d.signal || {};
+  const sigCurve = (sigData.pnl_curve || []).filter(p => !cutoff || new Date(p.time).getTime() >= cutoff);
+  const sigStart = sigCurve.length ? sigCurve[0].capital : 1000;
+  const simPoints = sigCurve.map(p => ({
+    x: new Date(p.time).getTime(),
+    y: (p.capital - sigStart) / sigStart * 100,
+  }));
+  pnlChart.data.datasets[1].data = simPoints;
+
   // Baseline at first visible point
+  const allPoints = [...points, ...simPoints];
   const baseY = points.length ? points[0].y : 0;
-  const xs = points.map(p => p.x);
+  const xs = allPoints.map(p => p.x);
   if (xs.length >= 2) {
     pnlChart.data.datasets[2].data = [{ x: Math.min(...xs), y: baseY }, { x: Math.max(...xs), y: baseY }];
   }
 
   // Auto-scale
-  const ys = points.map(p => p.y);
+  const ys = allPoints.map(p => p.y);
   if (ys.length) {
     const mn = Math.min(...ys, baseY), mx = Math.max(...ys, baseY);
     const pad = Math.max((mx - mn) * 0.25, 1);
@@ -1001,7 +1031,21 @@ function renderSignals(sig) {
   const tbody = document.getElementById('signal-body');
   const noEl = document.getElementById('no-signals');
 
-  setText('signal-stats', `${stats.accuracy || 0}% WR | ${stats.total_resolved || 0} resolved | +${(stats.roi_pct || 0).toFixed(1)}% ROI`);
+  // KPI cards
+  const resolved = (stats.total_resolved || 0);
+  const correct = stats.correct || 0;
+  const wrong = stats.wrong || 0;
+  const pending = signals.filter(s => s.outcome === 'pending').length;
+  const wr = resolved > 0 ? Math.round(correct / resolved * 100) : 0;
+  setText('signal-wr', resolved > 0 ? wr + '%' : '--');
+  const roiEl = document.getElementById('signal-roi');
+  const roiPct = stats.roi_pct || 0;
+  roiEl.textContent = (roiPct >= 0 ? '+' : '') + roiPct.toFixed(2) + '%';
+  roiEl.style.color = roiPct >= 0 ? 'var(--green)' : 'var(--red)';
+  setText('signal-resolved', resolved);
+  setText('signal-pending', pending);
+
+  setText('signal-stats', `${signals.length} signals | ${stats.total_scouts || 0} scouts | ${stats.total_flips || 0} flips`);
 
   if (!signals.length) { tbody.innerHTML = ''; noEl.style.display = 'block'; return; }
   noEl.style.display = 'none';
@@ -1009,7 +1053,6 @@ function renderSignals(sig) {
   tbody.innerHTML = signals.slice(0, 50).map(s => {
     const time = s.time ? new Date(s.time).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
     const dir = s.direction || '';
-    const dirClass = dir === 'up' ? 'win' : 'lose';
     const outcome = s.outcome || 'pending';
     const outcomeClass = (outcome === 'win' || outcome === 'correct') ? 'win' : (outcome === 'lose' || outcome === 'wrong') ? 'lose' : 'pending';
     const pnl = s.sim_pnl || 0;
@@ -1017,7 +1060,7 @@ function renderSignals(sig) {
     return `<tr>
       <td>${time}</td>
       <td>${(s.slug || '').split('-').slice(0,2).join(' ').toUpperCase()}</td>
-      <td class="${dirClass}">${dir.toUpperCase()}</td>
+      <td>${dir.toUpperCase()}</td>
       <td>$${Number(s.avg_entry_price || 0).toFixed(2)}</td>
       <td>${s.entry_tier || ''}</td>
       <td class="${outcomeClass}">${outcome.toUpperCase()}</td>
