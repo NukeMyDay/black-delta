@@ -13,57 +13,25 @@ from datetime import datetime, timezone
 STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "follow_state.json")
 
 
-class PulseState:
-    """Thread-safe state container for the PULSE bot."""
+class AppState:
+    """Thread-safe state container for the app."""
 
     def __init__(self, start_capital: float = 1000.0):
         self._lock = threading.Lock()
-        self.start_capital = start_capital
-        self.capital = start_capital
-        self.mode = "simulation"
 
-        # Current window
-        self.current_slug: str | None = None
-        self.current_analysis: dict | None = None
-        self.current_btc_price: float = 0
-        self.current_target_price: float = 0
+        # Capital config (persisted)
+        self.base_capital = float(os.getenv("BASE_CAPITAL", str(start_capital)))
+        self.reinvest_rate = 0.80   # 0-1
+        self.risk_level = 5         # 1-10, maps to Kelly fraction
+        self.signal_pct = 100       # 0-100
+        self.kill_switch = False
 
-        # Trade history (most recent first)
-        self.trades: deque[dict] = deque(maxlen=500)
-
-        # Stats
-        self.total_bets = 0
-        self.total_wins = 0
-        self.total_losses = 0
-        self.total_skips = 0
-        self.total_pnl = 0.0
-
-        # P&L curve over time (timestamp, capital)
-        self.pnl_curve: deque[dict] = deque(maxlen=2000)
-        self.pnl_curve.append({
-            "time": datetime.now(timezone.utc).isoformat(),
-            "capital": start_capital,
-            "pnl": 0,
-        })
-
-        # --- Combined Mode (PULSE + Signal agreement tracking) ---
-        self.combined_bets = 0
-        self.combined_wins = 0
-        self.combined_losses = 0
-        self.combined_pnl = 0.0
-        self.combined_capital = start_capital
-        self.combined_pnl_curve: deque[dict] = deque(maxlen=2000)
-        self.combined_pnl_curve.append({
-            "time": datetime.now(timezone.utc).isoformat(),
-            "capital": start_capital,
-            "pnl": 0,
-        })
-
-        # Bot status
-        self.bot_running = False
-        self.last_update: str | None = None
-        self.volatility: float = 0
-        self.prices_loaded: int = 0
+        # Daily stats tracking
+        self._daily_date = ""
+        self._daily_pnl = 0.0
+        self._daily_bets = 0
+        self._daily_wins = 0
+        self._peak_capital = self.base_capital  # for drawdown
 
         # --- Follow Mode ---
         self.follow_trades: deque[dict] = deque(maxlen=500)
@@ -82,73 +50,59 @@ class PulseState:
             "pnl": 0,
         })
 
-    def update_current(self, slug: str, analysis: dict, btc_price: float,
-                       target_price: float, volatility: float):
+    # ------------------------------------------------------------------
+    #  Capital properties
+    # ------------------------------------------------------------------
+    @property
+    def betting_capital(self):
+        profit = self.follow_pnl  # total realized P&L
+        if profit > 0:
+            return self.base_capital + profit * self.reinvest_rate
+        return self.base_capital + profit  # losses reduce capital directly
+
+    @property
+    def reserved(self):
+        profit = self.follow_pnl
+        return max(0, profit) * (1 - self.reinvest_rate)
+
+    @property
+    def kelly_fraction(self):
+        # 1=1/16, 2=3/32, 3=1/8, 4=3/16, 5=1/4(optimal), 6=5/16, 7=3/8, 8=7/16, 9=1/2, 10=1/2
+        mapping = {
+            1: 1/16, 2: 3/32, 3: 1/8, 4: 3/16, 5: 1/4,
+            6: 5/16, 7: 3/8, 8: 7/16, 9: 1/2, 10: 1/2,
+        }
+        return mapping.get(self.risk_level, 0.25)
+
+    @property
+    def max_drawdown(self):
+        current = self.betting_capital
+        if self._peak_capital <= 0:
+            return 0
+        return round((1 - current / self._peak_capital) * 100, 2) if current < self._peak_capital else 0
+
+    # ------------------------------------------------------------------
+    #  Daily stats
+    # ------------------------------------------------------------------
+    def record_daily_bet(self, pnl: float, won: bool):
+        """Update daily stats and peak/drawdown tracking."""
         with self._lock:
-            self.current_slug = slug
-            self.current_analysis = analysis
-            self.current_btc_price = btc_price
-            self.current_target_price = target_price
-            self.volatility = volatility
-            self.last_update = datetime.now(timezone.utc).isoformat()
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if self._daily_date != today:
+                self._daily_date = today
+                self._daily_pnl = 0.0
+                self._daily_bets = 0
+                self._daily_wins = 0
 
-    def record_trade(self, trade: dict):
-        with self._lock:
-            # Deduplicate: only one bet per event slug
-            slug = trade.get("event_slug")
-            if trade.get("bet_placed") and slug:
-                for existing in self.trades:
-                    if existing.get("event_slug") == slug and existing.get("bet_placed"):
-                        return
+            self._daily_bets += 1
+            self._daily_pnl += pnl
+            if won:
+                self._daily_wins += 1
 
-            self.trades.appendleft(trade)
-
-            if trade.get("bet_placed"):
-                self.total_bets += 1
-            else:
-                self.total_skips += 1
-
-    def resolve_trade(self, slug: str, outcome: str, btc_close: float):
-        """Resolve a pending trade after the 5-min window closes."""
-        with self._lock:
-            for trade in self.trades:
-                if trade.get("event_slug") == slug and trade.get("outcome") == "pending":
-                    trade["outcome"] = outcome
-                    if trade.get("bet_placed"):
-                        stake = trade.get("stake_usd", 0)
-                        multiplier = trade.get("payout_multiplier", 0)
-                        if outcome == "win":
-                            pnl = stake * (multiplier - 1)
-                            self.total_wins += 1
-                        else:
-                            pnl = -stake
-                            self.total_losses += 1
-                        trade["pnl_usd"] = round(pnl, 2)
-                        self.total_pnl += pnl
-                        self.capital += pnl
-
-                        self.pnl_curve.append({
-                            "time": datetime.now(timezone.utc).isoformat(),
-                            "capital": round(self.capital, 2),
-                            "pnl": round(self.total_pnl, 2),
-                        })
-
-                        # Combined: only count if signal agreed
-                        if trade.get("signal_agrees"):
-                            if outcome == "win":
-                                self.combined_wins += 1
-                                self.combined_pnl += pnl
-                                self.combined_capital += pnl
-                            else:
-                                self.combined_losses += 1
-                                self.combined_pnl += pnl
-                                self.combined_capital += pnl
-                            self.combined_pnl_curve.append({
-                                "time": datetime.now(timezone.utc).isoformat(),
-                                "capital": round(self.combined_capital, 2),
-                                "pnl": round(self.combined_pnl, 2),
-                            })
-                    break
+            # Update peak capital for drawdown tracking
+            current = self.betting_capital
+            if current > self._peak_capital:
+                self._peak_capital = current
 
     # ------------------------------------------------------------------
     #  Follow Mode
@@ -337,6 +291,12 @@ class PulseState:
                 "follow_pnl": self.follow_pnl,
                 "follow_trades": list(self.follow_trades),
                 "follow_pnl_curve": list(self.follow_pnl_curve),
+                # Capital config
+                "base_capital": self.base_capital,
+                "reinvest_rate": self.reinvest_rate,
+                "risk_level": self.risk_level,
+                "signal_pct": self.signal_pct,
+                "peak_capital": self._peak_capital,
                 "saved_at": datetime.now(timezone.utc).isoformat(),
             }
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -369,6 +329,13 @@ class PulseState:
             curve = data.get("follow_pnl_curve", [])
             self.follow_pnl_curve = deque(curve, maxlen=2000)
 
+            # Capital config (backward compatible -- use defaults if missing)
+            self.base_capital = data.get("base_capital", self.base_capital)
+            self.reinvest_rate = data.get("reinvest_rate", self.reinvest_rate)
+            self.risk_level = data.get("risk_level", self.risk_level)
+            self.signal_pct = data.get("signal_pct", self.signal_pct)
+            self._peak_capital = data.get("peak_capital", self._peak_capital)
+
         saved_at = data.get("saved_at", "unknown")
         print(f"[STATE] Follow state restored from disk (saved {saved_at})")
 
@@ -398,56 +365,6 @@ class PulseState:
                 "pnl_curve": list(self.follow_pnl_curve),
             }
 
-    def get_snapshot(self) -> dict:
-        with self._lock:
-            recent_trades = list(self.trades)
-            win_rate = (self.total_wins / self.total_bets * 100
-                        if self.total_bets > 0 else 0)
-
-            combined_resolved = self.combined_wins + self.combined_losses
-            combined_wr = (self.combined_wins / combined_resolved * 100
-                          if combined_resolved > 0 else 0)
-
-            return {
-                "mode": self.mode,
-                "bot_running": self.bot_running,
-                "last_update": self.last_update,
-                "capital": {
-                    "start": self.start_capital,
-                    "current": round(self.capital, 2),
-                    "pnl": round(self.total_pnl, 2),
-                    "pnl_pct": round(self.total_pnl / self.start_capital * 100, 2),
-                },
-                "stats": {
-                    "total_bets": self.total_bets,
-                    "wins": self.total_wins,
-                    "losses": self.total_losses,
-                    "skips": self.total_skips,
-                    "win_rate": round(win_rate, 1),
-                    "pending": sum(1 for t in self.trades
-                                   if t.get("outcome") == "pending"
-                                   and t.get("bet_placed")),
-                },
-                "combined": {
-                    "bets": self.combined_bets,
-                    "wins": self.combined_wins,
-                    "losses": self.combined_losses,
-                    "win_rate": round(combined_wr, 1),
-                    "pnl": round(self.combined_pnl, 2),
-                    "capital": round(self.combined_capital, 2),
-                    "pnl_curve": list(self.combined_pnl_curve),
-                },
-                "current": {
-                    "slug": self.current_slug,
-                    "btc_price": self.current_btc_price,
-                    "target_price": self.current_target_price,
-                    "volatility": self.volatility,
-                    "analysis": self.current_analysis,
-                },
-                "recent_trades": recent_trades,
-                "pnl_curve": list(self.pnl_curve),
-            }
-
 
 # Global singleton
-state = PulseState()
+state = AppState()

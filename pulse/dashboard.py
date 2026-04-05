@@ -1,11 +1,16 @@
 """
-BLACK DELTA / PULSE Dashboard
+BLACK DELTA — Polymarket Copy-Trading Dashboard
 
-Web dashboard for real-time monitoring of the PULSE bot.
-Runs the bot in a background thread and serves a live dashboard.
+Monitors Bonereaper's trades via RTDS WebSocket and places bets
+using two strategies:
+  - Signal: filtered bets (scout→flip check→Kelly sizing, ~73% WR)
+  - Follow: proportional copy of all trades (Kelly sizing)
+
+Capital management with configurable risk level, reinvestment rate,
+and strategy mix. Supports live trading via Polymarket CLOB API.
 
 Usage:
-    python dashboard.py              # Start dashboard + bot in simulation
+    python dashboard.py              # Start dashboard
     python dashboard.py --port 8080  # Custom port
 """
 
@@ -24,18 +29,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from src.polymarket import (
-    fetch_event,
-    fetch_market,
-    fetch_market_outcome,
-    fetch_midpoint,
-    fetch_orderbook,
-    get_current_event_slug,
-    get_next_event_slug,
-    parse_market_data,
-)
-from src.formula import PulseFormula
-from src.btc_feed import BTCFeed
+from src.polymarket import fetch_market_outcome
 from src.follow_feed import FollowFeed
 from src.executor import Executor
 from src.signal import SignalAggregator
@@ -44,309 +38,37 @@ from src.logger import log_trade
 
 load_dotenv()
 
-STAKE_USD = float(os.getenv("PULSE_STAKE_USD", "5"))
-MIN_EDGE = float(os.getenv("PULSE_MIN_EDGE", "0.08"))
-VOL_WINDOW = int(os.getenv("PULSE_VOLATILITY_WINDOW", "300"))
-STUDENT_T_DF = float(os.getenv("PULSE_STUDENT_T_DF", "4"))
-TAKER_SWITCH_SECONDS = 30
-MAKER_PRICE_OFFSET = 0.01
-
 # Follow mode config
-FOLLOW_WALLETS = os.getenv("FOLLOW_WALLETS", "")  # comma-separated addresses
-FOLLOW_MULTIPLIER = float(os.getenv("FOLLOW_MULTIPLIER", "1.0"))  # 1.0 = same size as source
-FOLLOW_MAX_STAKE = float(os.getenv("FOLLOW_MAX_STAKE", "50"))     # safety cap per trade
-FOLLOW_AUTO_MODE = os.getenv("FOLLOW_AUTO_MODE", "true").lower() in ("1", "true", "yes")
-FOLLOW_AUTO_FRACTION = float(os.getenv("FOLLOW_AUTO_FRACTION", "0.001"))  # 0.1% of capital per bet
-FOLLOW_SCALE = float(os.getenv("FOLLOW_SCALE", "0.025"))  # 1/40: scale source bets from ~200k to 1k (5x)
+FOLLOW_WALLETS = os.getenv("FOLLOW_WALLETS", "")
 
-app = FastAPI(title="BLACK DELTA / PULSE")
+app = FastAPI(title="BLACK DELTA")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Module-level references for API access
-_btc_feed: BTCFeed | None = None
+# Module-level references
 _follow_feed: FollowFeed | None = None
 _signal: SignalAggregator | None = None
 _executor: Executor | None = None
 
-# Runtime-mutable follow config (dashboard can toggle)
-_follow_config = {
-    "auto_mode": FOLLOW_AUTO_MODE,
-    "auto_fraction": FOLLOW_AUTO_FRACTION,
-    "multiplier": FOLLOW_MULTIPLIER,
-    "max_stake": FOLLOW_MAX_STAKE,
-    "simulation": True,  # True = simulation (scaled copy), False = real (sized by auto/manual)
-    "scale": FOLLOW_SCALE,
-}
 
+# ==================================================================
+#  Signal / Follow Resolution (background sweep)
+# ==================================================================
 
-# --- Bot Logic (runs in background thread) ---
-
-def get_best_bid(token_id: str) -> float | None:
-    book = fetch_orderbook(token_id)
-    if not book:
-        return None
-    bids = book.get("bids", [])
-    if not bids:
-        return None
-    best = max(bids, key=lambda b: float(b["price"]))
-    return float(best["price"])
-
-
-def analyze_and_update(formula: PulseFormula, btc_feed: BTCFeed, slug: str):
-    """Analyze a market and update shared state."""
-
-    market_raw = fetch_market(slug)
-    if not market_raw:
-        return None
-
-    market = parse_market_data(market_raw)
-    if not market["down_token_id"]:
-        return None
-
-    btc_price = btc_feed.fetch_current_price()
-    if not btc_price:
-        return None
-
-    down_mid = fetch_midpoint(market["down_token_id"])
-    up_mid = fetch_midpoint(market["up_token_id"])
-    down_price = down_mid if down_mid and down_mid > 0 else market["down_price"]
-    up_price = up_mid if up_mid and up_mid > 0 else market["up_price"]
-
-    if not down_price or not up_price:
-        return None
-
-    event_raw = fetch_event(slug)
-    if not event_raw:
-        return None
-
-    end_time_str = event_raw.get("endDate", "")
-    if not end_time_str:
-        return None
-
-    end_time = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
-    now = datetime.now(timezone.utc)
-    time_left = (end_time - now).total_seconds()
-
-    if time_left <= 5:
-        return None
-
-    event_start_ts = int(slug.split("-")[-1])
-    target_price = btc_feed.fetch_price_at_time(event_start_ts * 1000)
-    if not target_price:
-        target_price = btc_price
-
-    vol = btc_feed.get_volatility_per_second()
-
-    down_calc = formula.calculate(
-        btc_price=btc_price, target_price=target_price,
-        time_left_seconds=time_left, down_price=down_price,
-        volatility_per_second=vol,
-    )
-    up_calc = formula.calculate_up(
-        btc_price=btc_price, target_price=target_price,
-        time_left_seconds=time_left, up_price=up_price,
-        volatility_per_second=vol,
-    )
-
-    if down_calc["ev_per_dollar_maker"] >= up_calc["ev_per_dollar_maker"]:
-        best = down_calc
-        direction = "down"
-        contract_price = down_price
-        token_id = market["down_token_id"]
-    else:
-        best = up_calc
-        direction = "up"
-        contract_price = up_price
-        token_id = market["up_token_id"]
-
-    if best["edge"] < MIN_EDGE:
-        best["should_bet"] = False
-
-    # Filter: skip DOWN bets at sigma ≈ 0 (BTC has upward drift at target)
-    if (direction == "down" and abs(best.get("sigma_move", 0)) < 0.05
-            and best["should_bet"]):
-        best["should_bet"] = False
-        best["reason"] = "DOWN at sigma~0: upward drift bias"
-
-    # Determine order type
-    if best["should_bet"]:
-        if time_left <= TAKER_SWITCH_SECONDS:
-            if best.get("ev_per_dollar_taker", 0) > 0:
-                order_type = "taker"
-            else:
-                best["should_bet"] = False
-                order_type = "skip"
-        else:
-            order_type = "maker"
-    else:
-        order_type = "skip"
-
-    # Calculate limit price for maker
-    limit_price = None
-    if order_type == "maker":
-        bid = get_best_bid(token_id)
-        limit_price = round((bid + MAKER_PRICE_OFFSET) if bid else contract_price, 2)
-        limit_price = max(0.01, limit_price)
-
-    analysis = {
-        **best,
-        "direction": direction,
-        "order_type": order_type,
-        "limit_price": limit_price,
-        "contract_price": contract_price,
-        "up_price": up_price,
-        "down_price": down_price,
-    }
-
-    state.update_current(slug, analysis, btc_price, target_price, vol)
-
-    # Build trade data but DON'T record it here.
-    # The bot_loop handles recording with deduplication (one bet per window).
-    trade = None
-    if best["should_bet"]:
-        trade = {
-            "event_slug": slug,
-            "direction": direction,
-            "btc_price": btc_price,
-            "target_price": target_price,
-            "distance": best["distance"],
-            "time_left_seconds": time_left,
-            "contract_price": contract_price,
-            "real_prob": best["real_prob"],
-            "implied_prob": best["implied_prob"],
-            "edge": best["edge"],
-            "ev_per_dollar": best["ev_per_dollar"],
-            "sigma_move": best["sigma_move"],
-            "volatility": best["volatility"],
-            "payout_multiplier": best["payout_multiplier"],
-            "should_bet": True,
-            "bet_placed": True,
-            "stake_usd": STAKE_USD,
-            "mode": "simulation",
-            "outcome": "pending",
-            "pnl_usd": 0,
-            "order_type": order_type,
-            "limit_price": limit_price,
-            "time": datetime.now(timezone.utc).isoformat(),
-        }
-
-    return analysis, trade
-
-
-def resolve_previous_window(btc_feed: BTCFeed, slug: str):
-    """Check outcome of previous window. Tries Polymarket first, Binance fallback."""
-    prev_ts = int(slug.split("-")[-1]) - 300
-    prev_slug = f"btc-updown-5m-{prev_ts}"
-
-    # Check if we have pending trades for this slug
-    has_pending = any(
-        t.get("event_slug") == prev_slug
-        and t.get("outcome") == "pending"
-        and t.get("bet_placed")
-        for t in state.trades
-    )
-    if not has_pending:
-        return
-
-    # Primary: Polymarket actual outcome (Chainlink truth)
-    market_winner = fetch_market_outcome(prev_slug)
-    if market_winner:
-        for trade in state.trades:
-            if (trade.get("event_slug") == prev_slug
-                    and trade.get("outcome") == "pending"
-                    and trade.get("bet_placed")):
-                won = (trade.get("direction") == market_winner)
-                outcome = "win" if won else "lose"
-                state.resolve_trade(prev_slug, outcome, 0)
-        return
-
-    # Fallback: Binance price comparison
-    current_start_ts = int(slug.split("-")[-1])
-    close_price = btc_feed.fetch_price_at_time(current_start_ts * 1000)
-    open_price = btc_feed.fetch_price_at_time(prev_ts * 1000)
-
-    if close_price and open_price:
-        for trade in state.trades:
-            if (trade.get("event_slug") == prev_slug
-                    and trade.get("outcome") == "pending"
-                    and trade.get("bet_placed")):
-                direction = trade.get("direction")
-                if direction == "down":
-                    won = close_price < open_price
-                else:
-                    won = close_price >= open_price
-                outcome = "win" if won else "lose"
-                state.resolve_trade(prev_slug, outcome, close_price)
-
-
-def resolve_all_pending(btc_feed: BTCFeed):
-    """Sweep ALL pending trades and resolve using Polymarket's actual outcome.
-
-    Priority: Polymarket Gamma API (Chainlink truth) > Binance fallback.
-    """
-    now = time.time()
-    pending = [t for t in state.trades
-               if t.get("outcome") == "pending" and t.get("bet_placed")]
-
-    for trade in pending:
-        slug = trade.get("event_slug")
-        if not slug:
-            continue
-        try:
-            window_start_ts = int(slug.split("-")[-1])
-            window_end_ts = window_start_ts + 300
-
-            # Only resolve if window has fully closed (small buffer for settlement)
-            if now < window_end_ts + 15:
-                continue
-
-            direction = trade.get("direction")
-            resolved = False
-
-            # Primary: query Polymarket for the actual Chainlink-based outcome
-            market_winner = fetch_market_outcome(slug)
-            if market_winner:
-                won = (direction == market_winner)
-                outcome = "win" if won else "lose"
-                state.resolve_trade(slug, outcome, 0)
-                resolved = True
-
-            # Fallback: Binance price comparison (if Polymarket not yet settled)
-            if not resolved and now > window_end_ts + 180:
-                open_price = btc_feed.fetch_price_at_time(window_start_ts * 1000)
-                close_price = btc_feed.fetch_price_at_time(window_end_ts * 1000)
-                if open_price and close_price:
-                    if direction == "down":
-                        won = close_price < open_price
-                    else:
-                        won = close_price >= open_price
-                    outcome = "win" if won else "lose"
-                    state.resolve_trade(slug, outcome, close_price)
-        except (ValueError, IndexError):
-            continue
-
-
-def resolve_follow_pending(btc_feed: BTCFeed):
+def resolve_follow_pending():
     """Sweep pending follow trades, grouped by slug to minimize API calls."""
     now = time.time()
-    pending = [t for t in state.follow_trades
-               if t.get("outcome") == "pending"]
-
-    # Group by slug — one API call per unique slug
-    slugs_seen: dict[str, bool] = {}  # slug -> resolved?
+    pending = [t for t in state.follow_trades if t.get("outcome") == "pending"]
+    slugs_seen: dict[str, bool] = {}
 
     for trade in pending:
         slug = trade.get("event_slug")
         if not slug or slug in slugs_seen:
             continue
-
         try:
             parts = slug.split("-")
             window_start_ts = int(parts[-1])
             if "15m" in slug:
                 window_dur = 900
-            elif "5m" in slug:
-                window_dur = 300
             elif "1h" in slug:
                 window_dur = 3600
             else:
@@ -357,31 +79,77 @@ def resolve_follow_pending(btc_feed: BTCFeed):
                 slugs_seen[slug] = False
                 continue
 
-            # Primary: Polymarket outcome (one call per slug)
             market_winner = fetch_market_outcome(slug)
             if market_winner:
-                # Pass the winner direction — resolve_follow_trade handles per-trade win/lose
                 state.resolve_follow_trade(slug, market_winner, 0)
+                # Track daily stats for resolved bets
+                for t in state.follow_trades:
+                    if t.get("event_slug") == slug and t.get("outcome") in ("win", "lose"):
+                        pnl = t.get("pnl_usd", 0)
+                        won = t.get("outcome") == "win"
+                        state.record_daily_bet(pnl, won)
                 slugs_seen[slug] = True
-                continue
-
-            # Fallback: Binance (only for BTC markets, after 3 min buffer)
-            if not market_winner and now > window_end_ts + 180 and "btc" in slug:
-                open_price = btc_feed.fetch_price_at_time(window_start_ts * 1000)
-                close_price = btc_feed.fetch_price_at_time(window_end_ts * 1000)
-                if open_price and close_price:
-                    winner = "down" if close_price < open_price else "up"
-                    state.resolve_follow_trade(slug, winner, close_price)
-                    slugs_seen[slug] = True
-                    continue
-
-            slugs_seen[slug] = False
+            else:
+                slugs_seen[slug] = False
         except (ValueError, IndexError):
             slugs_seen[slug] = False
 
 
+def resolve_signal_pending():
+    """Sweep pending signals and resolve against actual market outcomes."""
+    if not _signal:
+        return
+    now = time.time()
+    pending_slugs = _signal.get_pending_slugs()
+
+    for slug in pending_slugs:
+        try:
+            parts = slug.split("-")
+            window_start_ts = int(parts[-1])
+            window_dur = 900 if "15m" in slug else 300
+            window_end_ts = window_start_ts + window_dur
+
+            if now < window_end_ts + 15:
+                continue
+
+            market_winner = fetch_market_outcome(slug)
+            if market_winner:
+                _signal.resolve_signal(slug, market_winner)
+        except (ValueError, IndexError):
+            continue
+
+
+# ==================================================================
+#  Follow Trade Handler
+# ==================================================================
+
+def _compute_kelly_stake(entry_price: float, allocation: float) -> float:
+    """Compute Kelly-sized bet from entry price and capital allocation.
+
+    Uses the same win rate tiers as the signal module.
+    """
+    from src.signal import WIN_RATE_FULL, WIN_RATE_HALF, ENTRY_FULL, ENTRY_HALF
+
+    if entry_price >= ENTRY_HALF or entry_price <= 0.01:
+        return 0.0
+
+    b = 1.0 / entry_price - 1
+    if b <= 0:
+        return 0.0
+
+    p = WIN_RATE_FULL if entry_price < ENTRY_FULL else WIN_RATE_HALF
+    q = 1 - p
+    kelly = max(0, (p * b - q) / b)
+    fraction = kelly * state.kelly_fraction
+    return round(allocation * fraction, 2)
+
+
 def handle_follow_trade(trade_data: dict):
     """Callback when a followed user trades. Handles BUY (open) and SELL (close)."""
+    # Kill switch check
+    if state.kill_switch:
+        return
+
     side = trade_data.get("side", "").upper()
     outcome_raw = trade_data.get("outcome", "").lower()
     direction = "up" if outcome_raw == "up" else "down" if outcome_raw == "down" else outcome_raw
@@ -393,7 +161,6 @@ def handle_follow_trade(trade_data: dict):
         return
 
     if side == "SELL":
-        # Early exit: close matching pending BUY trades for this slug + direction
         _handle_follow_sell(trade_data, direction, price, size, event_slug)
         return
 
@@ -401,24 +168,25 @@ def handle_follow_trade(trade_data: dict):
         return
 
     # --- BUY: open a new position ---
-    source_cost = round(price * size, 2)
-    is_live = not _follow_config["simulation"] and _executor and _executor.enabled
+    # Capital allocation: follow gets (100 - signal_pct)% of betting capital
+    follow_pct = 100 - state.signal_pct
+    follow_allocation = state.betting_capital * (follow_pct / 100)
 
-    # Stake sizing: always scale from source
-    stake = round(source_cost * _follow_config["scale"], 2)
-    if is_live and _executor:
-        stake = _executor.cap_amount(stake)
-    stake = max(stake, 0.01)
+    # Kelly-sized bet
+    stake = _compute_kelly_stake(price, follow_allocation)
+    if stake < 0.50:
+        return  # No edge or allocation too small
 
-    payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
+    is_live = _executor and _executor.enabled
     mode = "live" if is_live else "simulation"
 
-    # --- Live execution: place real order on Polymarket ---
+    # --- Live execution ---
     order_resp = None
     if is_live and _executor:
         token_id = trade_data.get("asset", "")
-        if token_id and stake >= 0.50:
-            slippage = 0.03  # max 3 cents above entry
+        if token_id:
+            stake = _executor.cap_amount(stake)
+            slippage = 0.03
             max_price = min(price + slippage, 0.95)
             market_info = _executor.get_market_info(token_id)
             order_resp = _executor.place_market_buy(
@@ -429,11 +197,11 @@ def handle_follow_trade(trade_data: dict):
                 tick_size=market_info.get("tick_size", "0.01"),
             )
             if not order_resp:
-                print(f"[FOLLOW] LIVE order failed — recording as sim fallback")
                 mode = "simulation"
         else:
-            print(f"[FOLLOW] Skip live: token_id={bool(token_id)} stake=${stake:.2f}")
             mode = "simulation"
+
+    payout_multiplier = round(1.0 / price, 2) if price > 0 else 0
 
     copy_trade = {
         "event_slug": event_slug,
@@ -441,10 +209,11 @@ def handle_follow_trade(trade_data: dict):
         "contract_price": price,
         "payout_multiplier": payout_multiplier,
         "stake_usd": stake,
+        "strategy": "follow",
         "source_wallet": trade_data.get("wallet", ""),
         "source_name": trade_data.get("name", ""),
         "source_size": size,
-        "source_cost": source_cost,
+        "source_cost": round(price * size, 2),
         "source_price": price,
         "tx_hash": trade_data.get("tx_hash", ""),
         "slug": trade_data.get("slug", ""),
@@ -459,18 +228,14 @@ def handle_follow_trade(trade_data: dict):
     }
 
     state.record_follow_trade(copy_trade)
-    emoji = "LIVE" if mode == "live" else "SIM"
-    print(f"[FOLLOW] [{emoji}] BUY {direction.upper()} @ ${price:.2f} "
-          f"(source ${source_cost:.2f} -> our ${stake:.2f}) "
-          f"from {copy_trade['source_name'] or 'unknown'}")
+    tag = "LIVE" if mode == "live" else "SIM"
+    print(f"[FOLLOW] [{tag}] BUY {direction.upper()} @ ${price:.2f} "
+          f"${stake:.2f} from {copy_trade['source_name'] or 'unknown'}")
 
 
 def _handle_follow_sell(trade_data: dict, direction: str, sell_price: float,
                         sell_size: float, event_slug: str):
-    """Close pending follow positions when the source user sells (early exit).
-
-    Passes sell_size so state can do proportional (partial) closes.
-    """
+    """Close pending follow positions when the source user sells."""
     state.record_follow_sell_event()
     closed = state.close_follow_trades(event_slug, direction, sell_price, sell_size)
     if closed > 0:
@@ -479,86 +244,101 @@ def _handle_follow_sell(trade_data: dict, direction: str, sell_price: float,
               f"@ ${sell_price:.2f} x{sell_size:.1f} from {name}")
 
 
-ANALYZE_INTERVAL = 1  # re-analyze every N seconds
+# ==================================================================
+#  Signal Handler
+# ==================================================================
+
+def _handle_signal(signal: dict):
+    """Callback when Signal module emits a bet signal."""
+    if state.kill_switch:
+        return
+
+    direction = signal.get("direction", "?").upper()
+    slug = signal.get("slug", "")
+    entry_price = signal.get("avg_entry_price", 0)
+    entry_tier = signal.get("entry_tier", "?")
+
+    # Capital allocation: signal gets signal_pct% of betting capital
+    signal_allocation = state.betting_capital * (state.signal_pct / 100)
+
+    # Kelly-sized bet using allocation
+    stake = _compute_kelly_stake(entry_price, signal_allocation)
+    if stake < 1.0:
+        return
+
+    is_live = _executor and _executor.enabled
+    mode = "live" if is_live else "simulation"
+
+    # Update the signal's suggested bet to match our capital model
+    signal["suggested_bet_usd"] = stake
+
+    # --- Live execution: place real order ---
+    order_resp = None
+    if is_live and _executor:
+        # Need token_id — get from signal's window data
+        win = _signal._windows.get(slug) if _signal else None
+        token_id = ""
+        if win:
+            # Find the dominant token from accumulated trades
+            for t in reversed(win.trades):
+                if t.get("asset"):
+                    token_id = t["asset"]
+                    break
+
+        if token_id and stake >= 0.50:
+            stake = _executor.cap_amount(stake)
+            slippage = 0.03
+            max_price = min(entry_price + slippage, 0.95)
+            market_info = _executor.get_market_info(token_id)
+            order_resp = _executor.place_market_buy(
+                token_id=token_id,
+                amount_usd=stake,
+                max_price=max_price,
+                neg_risk=market_info.get("neg_risk", False),
+                tick_size=market_info.get("tick_size", "0.01"),
+            )
+            if not order_resp:
+                mode = "simulation"
+        else:
+            mode = "simulation"
+
+    bias = signal.get("bias", 0)
+    trades = signal.get("trade_count", 0)
+
+    tag = "LIVE" if mode == "live" else "SIM"
+    print(f"[SIGNAL] [{tag}] BET {direction} on {slug} "
+          f"(entry=${entry_price:.2f} [{entry_tier}], "
+          f"bet=${stake:.2f}, bias={bias:.0%}, {trades} trades)")
 
 
-def bot_loop(formula: PulseFormula, btc_feed: BTCFeed):
-    """Main bot loop running in background thread.
+# ==================================================================
+#  Background Resolution Loop
+# ==================================================================
 
-    Price updates come from WebSocket callback + ticker thread (independent).
-    This loop focuses on analysis and trade management.
-    """
-    state.bot_running = True
-    state.mode = "simulation"
-
-    # Wire real-time price callback: WS/ticker -> state (independent of this loop)
-    def _on_price(price: float):
-        state.current_btc_price = price
-    btc_feed.on_price = _on_price
-
-    print("[BOT] Bootstrapping BTC price feed...")
-    btc_feed.bootstrap()
-    state.prices_loaded = len(btc_feed.prices)
-    print(f"[BOT] Loaded {state.prices_loaded} price points")
-    print(f"[BOT] Volatility: {btc_feed.get_volatility_per_second():.8f}")
-    print("[BOT] Running (1s tick, analyze every {0}s)...".format(ANALYZE_INTERVAL))
-
-    last_slug = None
-    last_analyze_time = 0
-    last_sweep_time = 0
-    bet_placed_slug = None  # track which window already has a bet
-
-    while state.bot_running:
+def _resolution_loop():
+    """Background thread: sweep pending trades every 10s."""
+    while True:
         try:
-            slug = get_current_event_slug()
-            now = time.time()
-
-            if slug != last_slug:
-                # New 5-minute window
-                if last_slug:
-                    resolve_previous_window(btc_feed, slug)
-                last_slug = slug
-                bet_placed_slug = None  # reset for new window
-
-                result = analyze_and_update(formula, btc_feed, slug)
-                if result is not None:
-                    _analysis, trade = result
-                    if trade and bet_placed_slug != slug:
-                        _annotate_signal_agreement(trade)
-                        state.record_trade(trade)
-                        log_trade(trade)
-                        bet_placed_slug = slug
-                last_analyze_time = now
-
-            elif now - last_analyze_time >= ANALYZE_INTERVAL:
-                # Re-analyze periodically for fresh edge/display
-                window_start_ts = int(slug.split("-")[-1])
-                time_left = (window_start_ts + 300) - now
-                if time_left > 5:
-                    result = analyze_and_update(formula, btc_feed, slug)
-                    if result is not None:
-                        _analysis, trade = result
-                        if trade and bet_placed_slug != slug:
-                            _annotate_signal_agreement(trade)
-                            state.record_trade(trade)
-                            log_trade(trade)
-                            bet_placed_slug = slug
-                    last_analyze_time = now
-
-            # Sweep all pending trades every 10s (PULSE + Follow + Signal)
-            if now - last_sweep_time >= 10:
-                resolve_all_pending(btc_feed)
-                resolve_follow_pending(btc_feed)
-                resolve_signal_pending(btc_feed)
-                last_sweep_time = now
-
-            time.sleep(1)
+            resolve_follow_pending()
+            resolve_signal_pending()
         except Exception as e:
-            print(f"[BOT ERROR] {e}")
-            time.sleep(2)
+            print(f"[RESOLVE] Error: {e}")
+        time.sleep(10)
 
 
-# --- API Endpoints ---
+def _state_saver_loop(interval: int = 60):
+    """Background thread: save state to disk every `interval` seconds."""
+    while True:
+        time.sleep(interval)
+        try:
+            state.save_follow_state()
+        except Exception as e:
+            print(f"[STATE] Save failed: {e}")
+
+
+# ==================================================================
+#  API Endpoints
+# ==================================================================
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
@@ -566,34 +346,202 @@ async def dashboard():
         return f.read()
 
 
-@app.get("/api/state")
-async def api_state():
-    return JSONResponse(state.get_snapshot())
+@app.get("/api/dashboard")
+async def api_dashboard():
+    """Unified dashboard endpoint — single poll for all data."""
+    # Capital
+    profit = state.follow_pnl
+    capital_data = {
+        "base": state.base_capital,
+        "profit": round(profit, 2),
+        "reserved": round(state.reserved, 2),
+        "betting": round(state.betting_capital, 2),
+        "max_drawdown": state.max_drawdown,
+    }
+
+    # Config
+    config_data = {
+        "risk_level": state.risk_level,
+        "kelly_fraction": round(state.kelly_fraction, 4),
+        "reinvest_rate": state.reinvest_rate,
+        "signal_pct": state.signal_pct,
+        "follow_pct": 100 - state.signal_pct,
+        "kill_switch": state.kill_switch,
+    }
+
+    # Daily summary
+    daily_data = {
+        "date": state._daily_date,
+        "pnl": round(state._daily_pnl, 2),
+        "bets": state._daily_bets,
+        "wins": state._daily_wins,
+        "wr": round(state._daily_wins / state._daily_bets * 100, 1) if state._daily_bets > 0 else 0,
+    }
+
+    # Connections
+    connections = {
+        "rtds": _follow_feed._ws_connected if _follow_feed else False,
+        "clob": _executor.enabled if _executor else False,
+    }
+
+    # Open positions (pending follow trades)
+    now = time.time()
+    open_positions = []
+    for t in state.follow_trades:
+        if t.get("outcome") == "pending":
+            slug = t.get("event_slug", "")
+            try:
+                parts = slug.split("-")
+                window_start = int(parts[-1])
+                window_dur = 900 if "15m" in slug else 3600 if "1h" in slug else 300
+                remaining = (window_start + window_dur) - now
+            except (ValueError, IndexError):
+                remaining = 0
+            open_positions.append({
+                "slug": slug,
+                "direction": t.get("direction"),
+                "stake": t.get("stake_usd"),
+                "entry_price": t.get("contract_price"),
+                "strategy": t.get("strategy", "follow"),
+                "countdown_s": max(0, round(remaining)),
+                "time": t.get("time"),
+            })
+
+    # Follow stats
+    follow_snapshot = state.get_follow_snapshot()
+
+    # Signal stats
+    signal_snapshot = _signal.get_snapshot() if _signal else {}
+
+    # Executor status
+    executor_data = _executor.get_status() if _executor else {"enabled": False}
+
+    # Feed status
+    feed_data = _follow_feed.get_status() if _follow_feed else {"connected": False}
+
+    return JSONResponse({
+        "capital": capital_data,
+        "config": config_data,
+        "daily": daily_data,
+        "connections": connections,
+        "open_positions": open_positions[:20],
+        "follow": follow_snapshot,
+        "signal": signal_snapshot,
+        "executor": executor_data,
+        "feed": feed_data,
+    })
 
 
-@app.get("/api/feed-status")
-async def api_feed_status():
-    """Diagnostic endpoint for BTC price feed health."""
-    if _btc_feed:
-        return JSONResponse(_btc_feed.get_feed_status())
-    return JSONResponse({"error": "feed not initialized"})
+@app.patch("/api/config")
+async def api_update_config(request: Request):
+    """Update capital/risk config at runtime."""
+    body = await request.json()
 
+    if "risk_level" in body:
+        state.risk_level = max(1, min(10, int(body["risk_level"])))
+    if "reinvest_rate" in body:
+        state.reinvest_rate = max(0, min(1, float(body["reinvest_rate"])))
+    if "signal_pct" in body:
+        state.signal_pct = max(0, min(100, float(body["signal_pct"])))
+    if "base_capital" in body:
+        state.base_capital = max(10, float(body["base_capital"]))
+    if "kill_switch" in body:
+        state.kill_switch = bool(body["kill_switch"])
+
+    # Update signal module's capital if available
+    if _signal:
+        sig_alloc = state.betting_capital * (state.signal_pct / 100)
+        _signal.sim_capital = sig_alloc
+
+    return JSONResponse({
+        "ok": True,
+        "config": {
+            "risk_level": state.risk_level,
+            "kelly_fraction": round(state.kelly_fraction, 4),
+            "reinvest_rate": state.reinvest_rate,
+            "signal_pct": state.signal_pct,
+            "follow_pct": 100 - state.signal_pct,
+            "kill_switch": state.kill_switch,
+            "betting_capital": round(state.betting_capital, 2),
+        }
+    })
+
+
+# --- Signal Endpoints ---
+
+@app.get("/api/signal")
+async def api_signal():
+    """Signal module state."""
+    if _signal:
+        return JSONResponse(_signal.get_snapshot())
+    return JSONResponse({"error": "signal module not initialized"})
+
+
+@app.get("/api/signal/download")
+async def api_signal_download(request: Request):
+    """Download signal history as CSV or JSON."""
+    if not _signal:
+        return JSONResponse({"error": "signal module not initialized"}, status_code=500)
+    fmt = request.query_params.get("format", "csv")
+    signals = list(_signal.signal_history)
+
+    if fmt == "json":
+        return JSONResponse(signals, headers={
+            "Content-Disposition": "attachment; filename=signal_history.json"
+        })
+
+    if not signals:
+        return Response("No signals", media_type="text/csv")
+    cols = ["time", "slug", "direction", "avg_entry_price", "entry_tier",
+            "outcome", "sim_pnl", "suggested_bet_usd", "bias",
+            "total_usdc", "trade_count", "confidence",
+            "scout_direction", "market_winner"]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    writer.writeheader()
+    for s in signals:
+        writer.writerow(s)
+    return Response(
+        buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=signal_history.csv"},
+    )
+
+
+# --- Follow Endpoints ---
 
 @app.get("/api/follow")
 async def api_follow():
-    """Follow mode state: trades, stats, P&L."""
+    """Follow mode state."""
     data = state.get_follow_snapshot()
     if _follow_feed:
         data["feed"] = _follow_feed.get_status()
-    else:
-        data["feed"] = {"connected": False, "wallets_count": 0}
-    data["config"] = {
-        **_follow_config,
-        "current_auto_stake": round(state.follow_capital * _follow_config["auto_fraction"], 2),
-    }
-    if _executor:
-        data["executor"] = _executor.get_status()
     return JSONResponse(data)
+
+
+@app.get("/api/follow/export")
+async def api_follow_export(format: str = "csv"):
+    """Export follow trades as CSV or JSON."""
+    trades = list(state.follow_trades)
+    if format == "json":
+        return Response(
+            json.dumps(trades, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=follow_trades.json"},
+        )
+    fields = ["time", "event_slug", "title", "direction", "contract_price",
+              "payout_multiplier", "source_cost", "stake_usd", "outcome",
+              "pnl_usd", "sell_price", "strategy", "source_name",
+              "source_size", "mode"]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(trades)
+    return Response(
+        buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=follow_trades.csv"},
+    )
 
 
 @app.post("/api/follow/wallets")
@@ -614,46 +562,6 @@ async def api_follow_add_wallet(request: Request):
     }})
 
 
-@app.patch("/api/follow/config")
-async def api_follow_update_config(request: Request):
-    """Update follow config at runtime (auto_mode, fraction, multiplier, max)."""
-    body = await request.json()
-    if "simulation" in body:
-        want_sim = bool(body["simulation"])
-        if not want_sim and (not _executor or not _executor.enabled):
-            return JSONResponse(
-                {"error": "Cannot enable live: executor not initialized (check POLY_* env vars)"},
-                status_code=400,
-            )
-        _follow_config["simulation"] = want_sim
-    if "auto_mode" in body:
-        _follow_config["auto_mode"] = bool(body["auto_mode"])
-    if "auto_fraction" in body:
-        val = float(body["auto_fraction"])
-        _follow_config["auto_fraction"] = max(0.0001, min(0.01, val))  # 0.01% - 1%
-    if "multiplier" in body:
-        val = float(body["multiplier"])
-        _follow_config["multiplier"] = max(0.01, min(10.0, val))
-    if "max_stake" in body:
-        val = float(body["max_stake"])
-        _follow_config["max_stake"] = max(1.0, val)
-    return JSONResponse({"ok": True, "config": _follow_config})
-
-
-@app.post("/api/executor/kill-switch")
-async def api_executor_kill_switch(request: Request):
-    """Toggle the executor kill switch."""
-    if not _executor:
-        return JSONResponse({"error": "Executor not initialized"}, status_code=500)
-    body = await request.json()
-    if body.get("reset"):
-        _executor.reset_kill_switch()
-    else:
-        _executor.kill_switch = True
-        print("[EXEC] Kill switch activated via dashboard")
-    return JSONResponse({"ok": True, "kill_switch": _executor.kill_switch})
-
-
 @app.delete("/api/follow/wallets")
 async def api_follow_remove_wallet(request: Request):
     """Remove a followed wallet."""
@@ -667,395 +575,84 @@ async def api_follow_remove_wallet(request: Request):
     return JSONResponse({"ok": True})
 
 
-@app.get("/api/follow/export")
-async def api_follow_export(format: str = "csv"):
-    """Export all copied trades as CSV or JSON."""
-    trades = list(state.follow_trades)
-    if format == "json":
-        content = json.dumps(trades, indent=2)
-        return Response(
-            content=content,
-            media_type="application/json",
-            headers={"Content-Disposition": "attachment; filename=copied_trades.json"},
-        )
-    # CSV
-    fields = ["time", "event_slug", "title", "direction", "contract_price",
-              "payout_multiplier", "source_cost", "stake_usd", "outcome",
-              "pnl_usd", "sell_price", "source_wallet", "source_name",
-              "source_size", "tx_hash"]
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
-    writer.writeheader()
-    writer.writerows(trades)
-    return Response(
-        content=buf.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=copied_trades.csv"},
-    )
-
-
 @app.get("/api/follow/feed-status")
 async def api_follow_feed_status():
-    """Diagnostic endpoint for follow feed health."""
+    """Follow feed health."""
     if _follow_feed:
         return JSONResponse(_follow_feed.get_status())
     return JSONResponse({"error": "follow feed not initialized"})
 
 
-# --- Signal Endpoints ---
-
-@app.get("/api/signal")
-async def api_signal():
-    """Signal module state: active windows, emitted signals, stats."""
-    if _signal:
-        data = _signal.get_snapshot()
-        if _follow_feed:
-            data["feed"] = _follow_feed.get_status()
-        else:
-            data["feed"] = {"connected": False, "wallets_count": 0, "wallets": []}
-        return JSONResponse(data)
-    return JSONResponse({"error": "signal module not initialized"})
-
-
-@app.get("/api/signal/download")
-async def api_signal_download(request: Request):
-    """Download full signal history as CSV or JSON."""
-    if not _signal:
-        return JSONResponse({"error": "signal module not initialized"}, status_code=500)
-    fmt = request.query_params.get("format", "csv")
-    signals = list(_signal.signal_history)
-
-    if fmt == "json":
-        return JSONResponse(signals, headers={
-            "Content-Disposition": "attachment; filename=signal_history.json"
-        })
-
-    # CSV
-    if not signals:
-        return Response("No signals", media_type="text/csv")
-    cols = ["time", "slug", "direction", "avg_entry_price", "entry_tier",
-            "outcome", "sim_pnl", "suggested_bet_usd", "bias",
-            "total_usdc", "trade_count", "confidence",
-            "scout_direction", "market_winner"]
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
-    writer.writeheader()
-    for s in signals:
-        writer.writerow(s)
-    return Response(
-        buf.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=signal_history.csv"},
-    )
-
-
-@app.patch("/api/signal/config")
-async def api_signal_config(request: Request):
-    """Update signal config at runtime."""
-    if not _signal:
-        return JSONResponse({"error": "signal module not initialized"}, status_code=500)
-    body = await request.json()
-    _signal.update_config(**body)
-    snap = _signal.get_snapshot()
-    return JSONResponse({"ok": True, "config": snap["config"]})
-
-
-@app.get("/api/formula")
-async def api_formula():
-    return JSONResponse({
-        "name": "PULSE Edge Formula",
-        "version": "Stage 1+2",
-        "parameters": {
-            "student_t_df": STUDENT_T_DF,
-            "ewma_lambda": 0.94,
-            "min_edge": MIN_EDGE,
-            "stake_usd": STAKE_USD,
-            "taker_fee": 0.072,
-            "maker_fee": 0.0,
-            "taker_switch_seconds": TAKER_SWITCH_SECONDS,
-        },
-        "description": {
-            "overview": (
-                "PULSE calculates the real probability that BTC will cross "
-                "the target price within the 5-minute window. When this "
-                "probability is higher than what the market implies, "
-                "an edge exists."
-            ),
-            "steps": [
-                {
-                    "step": 1,
-                    "name": "EWMA Volatility",
-                    "formula": "var(t) = lambda * var(t-1) + (1-lambda) * r(t)^2",
-                    "explanation": (
-                        "Exponentially Weighted Moving Average: Weights recent "
-                        "price movements more heavily than older ones. "
-                        "Lambda=0.94 means the last ~17 data points account "
-                        "for 50% of the variance. Reacts quickly to volatility "
-                        "clusters (after a large move, the next large move "
-                        "is more likely)."
-                    ),
-                },
-                {
-                    "step": 2,
-                    "name": "Sigma Distance",
-                    "formula": "sigma = distance / (price * vol * sqrt(time_left))",
-                    "explanation": (
-                        "How many standard deviations is the target price "
-                        "away from the current price? The lower the sigma "
-                        "value, the more likely the target will be crossed."
-                    ),
-                },
-                {
-                    "step": 3,
-                    "name": "Student-t Distribution (Fat Tails)",
-                    "formula": "real_prob = student_t.cdf(-sigma, df=4)",
-                    "explanation": (
-                        "Instead of the normal distribution, we use the "
-                        "Student-t distribution with 4 degrees of freedom. "
-                        "It has 'fatter tails' — extreme moves are more "
-                        "likely than the normal distribution predicts. BTC "
-                        "actually behaves this way: 3-sigma events occur "
-                        "~10x more often than the bell curve suggests."
-                    ),
-                },
-                {
-                    "step": 4,
-                    "name": "Edge & Expected Value",
-                    "formula": "edge = real_prob - implied_prob; EV = prob * profit - (1-prob) * loss",
-                    "explanation": (
-                        "Edge = difference between our estimate and the "
-                        "market price. EV = expected profit per dollar bet. "
-                        "We only bet when both are positive and the edge "
-                        "exceeds the minimum threshold."
-                    ),
-                },
-                {
-                    "step": 5,
-                    "name": "Hybrid Order Strategy",
-                    "formula": "if time > 30s: maker (0% fee); else: taker (7.2%)",
-                    "explanation": (
-                        "Early in the window we place limit orders (maker) "
-                        "with no fee. In the last 30 seconds we switch to "
-                        "market orders (taker) if the EV remains positive "
-                        "after the 7.2% fee."
-                    ),
-                },
-            ],
-            "edge_source": (
-                "The market systematically underprices tail events. Humans "
-                "judge unlikely events as even more unlikely than they are "
-                "(probability neglect). This is especially visible in BTC "
-                "5-minute markets: when BTC is $80+ above the target, the "
-                "market offers e.g. 200x — implying 0.5%. Statistically, "
-                "the real probability is ~2-3%. This discrepancy is our edge."
-            ),
-        },
-    })
-
-
-# --- Startup ---
-
-def _annotate_signal_agreement(trade: dict):
-    """Check if the Signal module agrees with this PULSE trade direction.
-
-    Annotates trade with:
-      signal_agrees: True/False/None (None = no signal available)
-      signal_direction: the signal's direction (if available)
-      signal_confidence: the signal's confidence (if available)
-    """
-    if not _signal:
-        trade["signal_agrees"] = None
-        return
-
-    slug = trade.get("event_slug", "")
-    sig = _signal.get_active_signal(slug)
-
-    if not sig:
-        trade["signal_agrees"] = None
-        trade["signal_direction"] = None
-        trade["signal_confidence"] = None
-        return
-
-    pulse_dir = trade.get("direction", "")
-    signal_dir = sig.get("direction", "")
-    agrees = pulse_dir == signal_dir
-
-    trade["signal_agrees"] = agrees
-    trade["signal_direction"] = signal_dir
-    trade["signal_confidence"] = sig.get("confidence", 0)
-
-    if agrees:
-        state.combined_bets += 1
-        tag = "COMBINED"
-    else:
-        tag = "DIVERGENT"
-
-    print(f"[{tag}] PULSE={pulse_dir.upper()} Signal={signal_dir.upper()} "
-          f"conf={sig.get('confidence', 0):.2f} on {slug}")
-
-
-def resolve_signal_pending(btc_feed: BTCFeed):
-    """Sweep pending signals and resolve against actual market outcomes."""
-    if not _signal:
-        return
-
-    now = time.time()
-    pending_slugs = _signal.get_pending_slugs()
-
-    for slug in pending_slugs:
-        try:
-            parts = slug.split("-")
-            window_start_ts = int(parts[-1])
-            window_dur = 900 if "15m" in slug else 300
-            window_end_ts = window_start_ts + window_dur
-
-            # Wait at least 15s after window end
-            if now < window_end_ts + 15:
-                continue
-
-            # Primary: Polymarket outcome
-            market_winner = fetch_market_outcome(slug)
-            if market_winner:
-                _signal.resolve_signal(slug, market_winner)
-                continue
-
-            # Fallback: Binance price comparison (after 3 min buffer, BTC only)
-            if now > window_end_ts + 180 and "btc" in slug:
-                open_price = btc_feed.fetch_price_at_time(window_start_ts * 1000)
-                close_price = btc_feed.fetch_price_at_time(window_end_ts * 1000)
-                if open_price and close_price:
-                    winner = "down" if close_price < open_price else "up"
-                    _signal.resolve_signal(slug, winner)
-        except (ValueError, IndexError):
-            continue
-
-
-def _handle_signal(signal: dict):
-    """Callback when Signal module emits a bet signal.
-
-    Called once per window (after scout + flip check pass).
-    """
-    direction = signal.get("direction", "?").upper()
-    confidence = signal.get("confidence", 0)
-    bias = signal.get("bias", 0)
-    slug = signal.get("slug", "")
-    bet_usd = signal.get("suggested_bet_usd", 0)
-    entry_tier = signal.get("entry_tier", "?")
-    entry_price = signal.get("avg_entry_price", 0)
-    trades = signal.get("trade_count", 0)
-    elapsed = signal.get("window_elapsed_s", 0)
-    remaining = signal.get("window_remaining_s", 0)
-
-    print(f"[SIGNAL] BET {direction} on {slug} "
-          f"(entry=${entry_price:.2f} [{entry_tier}], "
-          f"bet=${bet_usd:.2f}, bias={bias:.0%}, "
-          f"{trades} trades, {elapsed:.0f}s in, {remaining:.0f}s left)")
-
-    # Post-hoc annotation: PULSE may have placed its bet before this signal fired.
-    if slug:
-        sig_dir = signal.get("direction", "")
-        for trade in state.trades:
-            if (trade.get("event_slug") == slug
-                    and trade.get("bet_placed")
-                    and trade.get("signal_agrees") is None):
-                agrees = trade.get("direction", "") == sig_dir
-                trade["signal_agrees"] = agrees
-                trade["signal_direction"] = sig_dir
-                trade["signal_confidence"] = confidence
-                if agrees:
-                    state.combined_bets += 1
-                    print(f"[SIGNAL] Retroactively annotated PULSE bet on {slug} "
-                          f"as COMBINED")
-
-
-def _state_saver_loop(interval: int = 60):
-    """Background thread: save follow state to disk every `interval` seconds."""
-    while True:
-        time.sleep(interval)
-        try:
-            state.save_follow_state()
-        except Exception as e:
-            print(f"[STATE] Save failed: {e}")
-
+# ==================================================================
+#  Startup
+# ==================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="PULSE Dashboard")
+    parser = argparse.ArgumentParser(description="BLACK DELTA Dashboard")
     parser.add_argument("--port", type=int, default=3000)
     args = parser.parse_args()
 
-    global _btc_feed, _follow_feed, _signal, _executor
-    formula = PulseFormula(df=STUDENT_T_DF)
-    btc_feed = BTCFeed(window_seconds=VOL_WINDOW)
-    _btc_feed = btc_feed
+    global _follow_feed, _signal, _executor
 
-    # Restore follow state from previous run before starting anything
+    # Restore state from previous run
     state.load_follow_state()
 
-    # --- Signal Module (init before bot thread to avoid race condition) ---
+    # --- Signal Module ---
     signal_agg = SignalAggregator()
     _signal = signal_agg
     signal_agg.on_signal = _handle_signal
+    # Set signal capital from state
+    sig_alloc = state.betting_capital * (state.signal_pct / 100)
+    signal_agg.sim_capital = sig_alloc
 
-    bot_thread = threading.Thread(target=bot_loop, args=(formula, btc_feed),
-                                  daemon=True)
-    bot_thread.start()
+    # --- Resolution + State Saver ---
+    threading.Thread(target=_resolution_loop, daemon=True).start()
+    threading.Thread(target=_state_saver_loop, args=(60,), daemon=True).start()
 
-    # Periodic state persistence (every 60s)
-    saver_thread = threading.Thread(target=_state_saver_loop, args=(60,), daemon=True)
-    saver_thread.start()
-
-    # --- Follow Mode ---
+    # --- Follow Feed ---
     follow_feed = FollowFeed()
     _follow_feed = follow_feed
 
-    # Dual callback: follow mode + signal aggregator
     def _on_rtds_trade(trade):
         handle_follow_trade(trade)
         signal_agg.ingest(trade)
 
     follow_feed.on_trade = _on_rtds_trade
-
-    # Load persisted wallets from disk first
     follow_feed.load_wallets()
 
-    # Ensure default wallet (Bonereaper) is always present with label
+    # Ensure default wallet (Bonereaper)
     BONEREAPER = "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30"
     follow_feed.add_wallet(BONEREAPER, "Bonereaper (default)")
 
-    # Then add any from .env (merges, no duplicates)
     if FOLLOW_WALLETS:
         for wallet in FOLLOW_WALLETS.split(","):
             wallet = wallet.strip()
             if wallet:
                 follow_feed.add_wallet(wallet)
 
-    # --- Executor (real money trading) ---
+    if follow_feed.wallets:
+        follow_feed.start()
+
+    # --- Executor ---
     executor = Executor()
     _executor = executor
     if executor.initialize():
-        _follow_config["simulation"] = False
-        print(f"  Executor: LIVE (max ${executor.max_bet_usd}/bet, "
-              f"daily loss limit ${executor.daily_loss_limit})")
+        print("  Mode: LIVE TRADING")
+        print(f"  Max bet: ${executor.max_bet_usd} | Daily loss limit: ${executor.daily_loss_limit}")
     else:
-        _follow_config["simulation"] = True
-        print("  Executor: SIMULATION (set POLY_* env vars for live)")
+        print("  Mode: SIMULATION (set POLY_* env vars for live)")
 
-    if follow_feed.wallets:
-        follow_feed.start()
-        print(f"  Follow mode: tracking {len(follow_feed.wallets)} wallet(s)")
-        print(f"  Follow scale: {FOLLOW_SCALE}x (1/{int(1/FOLLOW_SCALE)})")
-        print(f"  Signal module: active (bias threshold {signal_agg.bias_threshold})")
-    else:
-        print("  Follow mode: no wallets configured (add via dashboard)")
-
-    print(f"\n  BLACK DELTA / PULSE Dashboard")
+    print(f"\n  BLACK DELTA")
+    print(f"  Capital: ${state.betting_capital:.2f} | Risk: {state.risk_level}/10 | "
+          f"Kelly: {state.kelly_fraction:.1%}")
+    print(f"  Strategy: Signal {state.signal_pct}% / Follow {100 - state.signal_pct}%")
+    print(f"  Wallets: {len(follow_feed.wallets)}")
     print(f"  http://localhost:{args.port}\n")
 
     try:
         uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
     finally:
-        # Save on clean shutdown (Ctrl+C, SIGTERM, etc.)
-        print("[STATE] Saving follow state on shutdown...")
+        print("[STATE] Saving state on shutdown...")
         state.save_follow_state()
 
 
