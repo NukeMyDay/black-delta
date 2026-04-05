@@ -38,6 +38,7 @@ class AppState:
         self._daily_bets = 0
         self._daily_wins = 0
         self._peak_capital = self.base_capital  # for drawdown
+        self._start_of_day_balance: float | None = None  # snapshot for today's P&L
 
         # --- Follow Mode ---
         self.follow_trades: deque[dict] = deque(maxlen=500)
@@ -461,6 +462,7 @@ class AppState:
                 "signal_pct": self.signal_pct,
                 "daily_loss_limit_pct": self.daily_loss_limit_pct,
                 "peak_capital": self._peak_capital,
+                "start_of_day_balance": self._start_of_day_balance,
                 "kill_switch": self.kill_switch,
                 "sim_mode": self.sim_mode,
                 "investors": self.investors,
@@ -503,6 +505,7 @@ class AppState:
             self.signal_pct = data.get("signal_pct", self.signal_pct)
             self.daily_loss_limit_pct = data.get("daily_loss_limit_pct", self.daily_loss_limit_pct)
             self._peak_capital = data.get("peak_capital", self._peak_capital)
+            self._start_of_day_balance = data.get("start_of_day_balance", self._start_of_day_balance)
             if "kill_switch" in data:
                 self.kill_switch = data["kill_switch"]
             if "sim_mode" in data:

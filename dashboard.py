@@ -404,14 +404,21 @@ def _balance_sync_loop(interval: int = 60):
                 balance = _executor.get_usdc_balance()
                 if balance is not None:
                     state.polymarket_balance = balance
+                    # Track start-of-day balance for today's P&L
+                    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    if state._daily_date != today or state._start_of_day_balance is None:
+                        state._start_of_day_balance = balance
                     # Keep peak tracking up to date
                     if balance > state._peak_capital:
                         state._peak_capital = balance
+                    # Append to PnL curve for chart (real balance, not internal tracking)
+                    state.follow_pnl_curve.append({
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "capital": round(balance, 2),
+                        "pnl": round(balance - state.base_capital, 2),
+                    })
                     # Re-sync executor limits with updated capital
                     _sync_executor_limits()
-                    print(f"[BALANCE] Polymarket USDC: ${balance:.2f} | "
-                          f"Max bet: ${_executor.max_bet_usd:.2f} | "
-                          f"Loss limit: ${_executor.daily_loss_limit:.2f}")
         except Exception as e:
             print(f"[BALANCE] Sync failed: {e}")
 
@@ -429,10 +436,12 @@ async def dashboard():
 @app.get("/api/dashboard")
 async def api_dashboard():
     """Unified dashboard endpoint — single poll for all data."""
-    # Capital
-    profit = state.follow_pnl
+    # Capital — use real Polymarket balance as source of truth
+    balance = state.polymarket_balance or state.betting_capital
+    profit = balance - state.base_capital
     capital_data = {
         "base": state.base_capital,
+        "balance": round(balance, 2),
         "profit": round(profit, 2),
         "reserved": round(state.reserved, 2),
         "betting": round(state.betting_capital, 2),
@@ -455,10 +464,14 @@ async def api_dashboard():
         "daily_loss_limit_usd": round(state.betting_capital * state.daily_loss_limit_pct / 100, 2),
     }
 
-    # Daily summary
+    # Daily summary — use real balance for today's P&L
+    if state._start_of_day_balance is not None:
+        today_pnl = balance - state._start_of_day_balance
+    else:
+        today_pnl = state._daily_pnl  # fallback to internal tracking
     daily_data = {
         "date": state._daily_date,
-        "pnl": round(state._daily_pnl, 2),
+        "pnl": round(today_pnl, 2),
         "bets": state._daily_bets,
         "wins": state._daily_wins,
         "wr": round(state._daily_wins / state._daily_bets * 100, 1) if state._daily_bets > 0 else 0,
