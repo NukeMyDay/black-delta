@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OrderType
+from py_clob_client.clob_types import ApiCreds, BalanceAllowanceParams, OrderType
 from py_clob_client.order_builder.constants import BUY
 
 
@@ -252,12 +252,15 @@ class Executor:
         if not self.enabled or not self.client:
             return None
         try:
-            result = self.client.get_balance_allowance(
-                params={"asset_type": "USDC"}
+            params = BalanceAllowanceParams(
+                asset_type="USDC",
+                signature_type=2,  # POLY_GNOSIS_SAFE
             )
-            if result and "balance" in result:
+            result = self.client.get_balance_allowance(params)
+            if result and hasattr(result, "balance"):
+                return round(float(result.balance), 2)
+            if isinstance(result, dict) and "balance" in result:
                 return round(float(result["balance"]), 2)
-            # Fallback: try direct balance key
             if isinstance(result, (int, float)):
                 return round(float(result), 2)
         except Exception as e:
