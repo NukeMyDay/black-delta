@@ -101,6 +101,11 @@ body {
   color: #fff;
   border-color: var(--red);
 }
+.kill-btn.sim {
+  background: var(--orange);
+  color: #000;
+  border-color: var(--orange);
+}
 
 /* ============================================================
    Cards
@@ -715,15 +720,8 @@ function render(d) {
   setText('mix-label', `/ ${cfg.follow_pct}% Follow`);
   setText('loss-label', `($${fmt(cfg.daily_loss_limit_usd || 0)})`);
 
-  // Kill switch
-  const btn = document.getElementById('kill-btn');
-  if (cfg.kill_switch) {
-    btn.className = 'kill-btn paused';
-    btn.textContent = 'PAUSED';
-  } else {
-    btn.className = 'kill-btn active';
-    btn.textContent = 'ACTIVE';
-  }
+  // Trading mode button (3 states)
+  updateModeBtn(cfg.kill_switch, cfg.sim_mode);
 
   // Connection dots
   document.getElementById('dot-rtds').className = 'dot' + (d.connections.rtds ? ' on' : '');
@@ -791,10 +789,32 @@ function onLossLimitChange(v) {
   document.getElementById('loss-input').value = v;
   sendConfig({ daily_loss_limit_pct: v });
 }
+function updateModeBtn(kill_switch, sim_mode) {
+  const btn = document.getElementById('kill-btn');
+  if (kill_switch) {
+    btn.className = 'kill-btn paused'; btn.textContent = 'INACTIVE';
+  } else if (sim_mode) {
+    btn.className = 'kill-btn sim'; btn.textContent = 'SIM';
+  } else {
+    btn.className = 'kill-btn active'; btn.textContent = 'ACTIVE';
+  }
+}
+
 function toggleKillSwitch() {
   if (!lastData) return;
-  const newState = !lastData.config.kill_switch;
-  sendConfig({ kill_switch: newState });
+  const { kill_switch, sim_mode } = lastData.config;
+  let patch;
+  // Cycle: INACTIVE → SIM → ACTIVE → INACTIVE
+  if (kill_switch) {
+    patch = { kill_switch: false, sim_mode: true };   // → SIM
+  } else if (sim_mode) {
+    patch = { kill_switch: false, sim_mode: false };  // → ACTIVE
+  } else {
+    patch = { kill_switch: true, sim_mode: false };   // → INACTIVE
+  }
+  // Optimistic UI update — don't wait for server
+  updateModeBtn(patch.kill_switch, patch.sim_mode);
+  fetch('/api/config', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) });
 }
 
 // ============================================================

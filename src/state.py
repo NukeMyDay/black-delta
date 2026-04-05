@@ -27,6 +27,7 @@ class AppState:
         self.signal_pct = 100       # 0-100
         self.daily_loss_limit_pct = 10  # % of betting capital
         self.kill_switch = True     # Paused by default — must be activated manually
+        self.sim_mode = False       # Sim: record bets but don't place real orders
 
         # Investors (friends only — owner is not listed)
         self.investors: list[dict] = []
@@ -460,6 +461,7 @@ class AppState:
                 "daily_loss_limit_pct": self.daily_loss_limit_pct,
                 "peak_capital": self._peak_capital,
                 "kill_switch": self.kill_switch,
+                "sim_mode": self.sim_mode,
                 "investors": self.investors,
                 "saved_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -502,6 +504,8 @@ class AppState:
             self._peak_capital = data.get("peak_capital", self._peak_capital)
             if "kill_switch" in data:
                 self.kill_switch = data["kill_switch"]
+            if "sim_mode" in data:
+                self.sim_mode = data["sim_mode"]
 
             # Investors — friends only, strip legacy "Owner" entry if present
             investors = data.get("investors", [])

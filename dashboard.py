@@ -177,7 +177,7 @@ def handle_follow_trade(trade_data: dict):
     if stake < 0.50:
         return  # No edge or allocation too small
 
-    is_live = _executor and _executor.enabled
+    is_live = _executor and _executor.enabled and not state.sim_mode
     mode = "live" if is_live else "simulation"
 
     # --- Live execution ---
@@ -266,7 +266,7 @@ def _handle_signal(signal: dict):
     if stake < 1.0:
         return
 
-    is_live = _executor and _executor.enabled
+    is_live = _executor and _executor.enabled and not state.sim_mode
     mode = "live" if is_live else "simulation"
 
     # Update the signal's suggested bet to match our capital model
@@ -415,6 +415,7 @@ async def api_dashboard():
         "signal_pct": state.signal_pct,
         "follow_pct": 100 - state.signal_pct,
         "kill_switch": state.kill_switch,
+        "sim_mode": state.sim_mode,
         "daily_loss_limit_pct": state.daily_loss_limit_pct,
         "daily_loss_limit_usd": round(state.betting_capital * state.daily_loss_limit_pct / 100, 2),
     }
@@ -499,6 +500,8 @@ async def api_update_config(request: Request):
         state.signal_pct = max(0, min(100, float(body["signal_pct"])))
     if "kill_switch" in body:
         state.kill_switch = bool(body["kill_switch"])
+    if "sim_mode" in body:
+        state.sim_mode = bool(body["sim_mode"])
     if "daily_loss_limit_pct" in body:
         state.daily_loss_limit_pct = max(1, min(90, float(body["daily_loss_limit_pct"])))
 

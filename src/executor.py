@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, AssetType, BalanceAllowanceParams, OrderType
+from py_clob_client.clob_types import ApiCreds, AssetType, BalanceAllowanceParams, MarketOrderArgs, OrderType
 from py_clob_client.order_builder.constants import BUY
 
 
@@ -111,11 +111,12 @@ class Executor:
         with self._lock:
             try:
                 order = self.client.create_market_order(
-                    token_id=token_id,
-                    side=BUY,
-                    amount=round(amount_usd, 2),
-                    price=max_price,
-                    options={"tick_size": tick_size, "neg_risk": neg_risk},
+                    MarketOrderArgs(
+                        token_id=token_id,
+                        side=BUY,
+                        amount=round(amount_usd, 2),
+                        price=max_price,
+                    )
                 )
                 resp = self.client.post_order(order, OrderType.FOK)
 
