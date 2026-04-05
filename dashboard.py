@@ -186,7 +186,7 @@ def handle_follow_trade(trade_data: dict):
         token_id = trade_data.get("asset", "")
         if token_id:
             stake = _executor.cap_amount(stake)
-            slippage = 0.03
+            slippage = 0.15
             max_price = min(price + slippage, 0.95)
             market_info = _executor.get_market_info(token_id)
             order_resp = _executor.place_market_buy(
@@ -280,7 +280,7 @@ def _handle_signal(signal: dict):
     token_id = signal.get("token_id", "")
     if is_live and _executor and token_id and stake >= 0.50:
         stake = _executor.cap_amount(stake)
-        slippage = 0.03
+        slippage = 0.15
         max_price = min(entry_price + slippage, 0.95)
         market_info = _executor.get_market_info(token_id)
         order_resp = _executor.place_market_buy(
