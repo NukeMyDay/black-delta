@@ -409,24 +409,19 @@ body {
       <div class="card-sub">Friends: $<span id="cap-friends">0.00</span></div>
     </div>
     <div class="card">
-      <div class="card-label">Profit</div>
+      <div class="card-label" id="profit-label">Profit</div>
       <div class="card-value" id="cap-profit">$0.00</div>
-      <div class="card-sub">Reserved: $<span id="cap-reserved">0.00</span></div>
+      <div class="card-sub" id="profit-sub">All time</div>
     </div>
     <div class="card">
-      <div class="card-label">Today</div>
-      <div class="card-value" id="daily-pnl">$0.00</div>
-      <div class="card-sub" id="daily-stats">0 bets</div>
+      <div class="card-label" id="winrate-label">Win Rate</div>
+      <div class="card-value" id="cap-winrate">--</div>
+      <div class="card-sub" id="winrate-sub">0W / 0 bets</div>
     </div>
     <div class="card">
       <div class="card-label">Max Drawdown</div>
       <div class="card-value" id="max-dd">0%</div>
       <div class="card-sub" id="pending-count">0 open</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Accrued Fees</div>
-      <div class="card-value" id="cap-fees" style="color:var(--accent)">$0.00</div>
-      <div class="card-sub">NAV/Share: $<span id="nav-share">1.0000</span></div>
     </div>
   </div>
 
@@ -709,21 +704,24 @@ function render(d) {
   // Friends' total invested
   const friendsTotal = (d.investors || []).reduce((s, i) => s + i.current_value, 0);
   setText('cap-friends', fmt(friendsTotal));
+
+  // Range-filtered stats from resolved trades
+  const cutoff = getTimeCutoff(chartRange);
+  const rangeStats = computeRangeStats((d.follow || {}).trades || [], cutoff);
+  const rangeLabels = { today: 'Today', week: 'This week', month: 'This month', all: 'All time' };
+
+  // Profit (filtered by chart range)
   const profitEl = document.getElementById('cap-profit');
-  profitEl.textContent = (cap.profit >= 0 ? '+$' : '-$') + fmt(Math.abs(cap.profit));
-  profitEl.style.color = cap.profit >= 0 ? 'var(--green)' : 'var(--red)';
-  setText('cap-reserved', fmt(cap.reserved));
+  const rangeProfit = rangeStats.profit;
+  profitEl.textContent = (rangeProfit >= 0 ? '+$' : '-$') + fmt(Math.abs(rangeProfit));
+  profitEl.style.color = rangeProfit >= 0 ? 'var(--green)' : 'var(--red)';
+  setText('profit-sub', rangeLabels[chartRange] || 'All time');
 
-  // Daily
-  const daily = d.daily;
-  const dailyEl = document.getElementById('daily-pnl');
-  dailyEl.textContent = (daily.pnl >= 0 ? '+$' : '-$') + fmt(Math.abs(daily.pnl));
-  dailyEl.style.color = daily.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-  setText('daily-stats', `${daily.bets} bets | ${daily.wins}W | ${daily.wr}% WR`);
-
-  // Fees & NAV
-  setText('cap-fees', '$' + fmt(cap.accrued_fees || 0));
-  setText('nav-share', Number(cap.nav_per_share || 1).toFixed(4));
+  // Win Rate (filtered by chart range)
+  const wrEl = document.getElementById('cap-winrate');
+  wrEl.textContent = rangeStats.resolved > 0 ? rangeStats.wr + '%' : '--';
+  wrEl.style.color = rangeStats.wr >= 50 ? 'var(--green)' : rangeStats.resolved > 0 ? 'var(--red)' : 'var(--text)';
+  setText('winrate-sub', `${rangeStats.wins}W / ${rangeStats.resolved} bets`);
 
   // Drawdown
   setText('max-dd', cap.max_drawdown > 0 ? `-${cap.max_drawdown}%` : '0%');
@@ -920,7 +918,7 @@ function setRange(r) {
   chartRange = r;
   document.querySelectorAll('.time-filters button').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
-  if (lastData) renderChart(lastData);
+  if (lastData) render(lastData);
 }
 
 function getTimeCutoff(range) {
@@ -929,6 +927,26 @@ function getTimeCutoff(range) {
   if (range === 'week') { const d = new Date(now); d.setDate(d.getDate() - 7); return d.getTime(); }
   if (range === 'month') { const d = new Date(now); d.setMonth(d.getMonth() - 1); return d.getTime(); }
   return 0;
+}
+
+function computeRangeStats(trades, cutoff) {
+  let wins = 0, losses = 0, profit = 0;
+  for (const t of trades) {
+    if (t.outcome === 'pending') continue;
+    if (cutoff) {
+      const tTime = t.time ? new Date(t.time).getTime() : 0;
+      if (tTime < cutoff) continue;
+    }
+    profit += t.pnl_usd || 0;
+    if (t.outcome === 'win' || (t.outcome === 'closed' && (t.pnl_usd || 0) >= 0)) {
+      wins++;
+    } else {
+      losses++;
+    }
+  }
+  const resolved = wins + losses;
+  const wr = resolved > 0 ? Math.round(wins / resolved * 100) : 0;
+  return { wins, losses, resolved, profit: Math.round(profit * 100) / 100, wr };
 }
 
 function renderChart(d) {

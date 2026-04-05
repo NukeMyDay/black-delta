@@ -90,12 +90,9 @@ def resolve_follow_pending():
                         pnl = t.get("pnl_usd", 0)
                         won = t.get("outcome") == "win"
                         state.record_daily_bet(pnl, won)
-                # Auto-redeem resolved position
+                # Queue for auto-redeem (sweep loop will retry until on-chain resolves)
                 if _redeemer and _redeemer.enabled:
-                    try:
-                        _redeemer.try_redeem_slug(slug)
-                    except Exception as e:
-                        print(f"[REDEEM] Error for {slug}: {e}")
+                    _redeemer.queue_redeem(slug)
                 slugs_seen[slug] = True
             else:
                 slugs_seen[slug] = False
@@ -393,6 +390,17 @@ def _sync_executor_limits():
     _executor.max_bet_usd = round(state.betting_capital * state.kelly_fraction, 2)
     # Daily loss limit = configured % of capital
     _executor.daily_loss_limit = round(state.betting_capital * state.daily_loss_limit_pct / 100, 2)
+
+
+def _redeem_sweep_loop(interval: int = 120):
+    """Background thread: retry pending redemptions every `interval` seconds."""
+    while True:
+        time.sleep(interval)
+        try:
+            if _redeemer and _redeemer.enabled:
+                _redeemer.sweep_pending()
+        except Exception as e:
+            print(f"[REDEEM] Sweep loop error: {e}")
 
 
 def _balance_sync_loop(interval: int = 60):
@@ -776,10 +784,11 @@ def main():
     sig_alloc = state.betting_capital * (state.signal_pct / 100)
     signal_agg.sim_capital = sig_alloc
 
-    # --- Resolution + State Saver + Balance Sync ---
+    # --- Resolution + State Saver + Balance Sync + Redeem Sweep ---
     threading.Thread(target=_resolution_loop, daemon=True).start()
     threading.Thread(target=_state_saver_loop, args=(60,), daemon=True).start()
     threading.Thread(target=_balance_sync_loop, args=(60,), daemon=True).start()
+    threading.Thread(target=_redeem_sweep_loop, args=(120,), daemon=True).start()
 
     # --- Follow Feed ---
     follow_feed = FollowFeed()

@@ -89,6 +89,7 @@ class Redeemer:
         self.sig_type: int = 0
         self.enabled = False
         self._redeemed: set[str] = set()  # condition IDs already redeemed
+        self._pending_slugs: dict[str, bool] = {}  # slug → neg_risk, awaiting on-chain resolution
 
     def initialize(self, private_key: str, signer: str, funder: str, sig_type: int) -> bool:
         """Initialize web3 connection."""
@@ -253,6 +254,26 @@ class Redeemer:
             print(f"[REDEEM] Safe tx build failed: {e}")
             return None
 
+    def queue_redeem(self, slug: str, neg_risk: bool = False):
+        """Queue a slug for redemption (will be retried by sweep loop)."""
+        if slug not in self._redeemed and slug not in self._pending_slugs:
+            self._pending_slugs[slug] = neg_risk
+            print(f"[REDEEM] Queued: {slug}")
+
+    def sweep_pending(self):
+        """Try to redeem all queued slugs. Called periodically by background loop."""
+        if not self.enabled or not self._pending_slugs:
+            return
+        done = []
+        for slug, neg_risk in list(self._pending_slugs.items()):
+            try:
+                if self.try_redeem_slug(slug, neg_risk):
+                    done.append(slug)
+            except Exception as e:
+                print(f"[REDEEM] Sweep error for {slug}: {e}")
+        for slug in done:
+            self._pending_slugs.pop(slug, None)
+
     def try_redeem_slug(self, slug: str, neg_risk: bool = False) -> bool:
         """Try to redeem a resolved market by slug."""
         cid = self.get_condition_id(slug)
@@ -264,6 +285,7 @@ class Redeemer:
             return True
 
         if not self.is_resolved(cid):
+            print(f"[REDEEM] Not yet resolved on-chain: {slug} (cid={cid[:16]}...)")
             return False
 
         return self.redeem(cid, neg_risk)
