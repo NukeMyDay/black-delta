@@ -440,19 +440,13 @@ class Redeemer:
         - amounts = [yesTokenBalance, noTokenBalance] in base units
         - Adapter pulls tokens from caller via safeBatchTransferFrom
         - Requires CTF.isApprovedForAll(caller, NegRiskAdapter) == true
+
+        Note: balance pre-check already done in try_redeem_slug.
         """
         cid_bytes = bytes.fromhex(condition_id.replace("0x", ""))
-        holder = self._get_token_holder()
 
-        # Get token balances
+        # Re-fetch balances (already checked non-zero in try_redeem_slug)
         amounts = self._get_token_balances(token_ids)
-        print(f"[REDEEM] NegRisk({slug}): holder={holder[:10]}... "
-              f"tokens={len(token_ids)} balances={amounts}")
-
-        if all(a == 0 for a in amounts):
-            print(f"[REDEEM] NegRisk({slug}): no token balances — already redeemed or no position")
-            self._redeemed.add(condition_id)
-            return True
 
         # Ensure NegRiskAdapter is approved as CTF operator
         if not self._check_neg_risk_approval():
@@ -748,7 +742,10 @@ class Redeemer:
         Fetches market data from Gamma API to get:
         - conditionId (for the on-chain call)
         - negRisk (to choose CTF vs NegRiskAdapter — overrides the queued hint)
-        - clobTokenIds (for ERC-1155 balance queries on neg_risk markets)
+        - clobTokenIds (for ERC-1155 balance queries)
+
+        Pre-checks token balances BEFORE attempting any TX — if all balances
+        are zero, the position was already redeemed and we skip silently.
         """
         info = self.get_market_info(slug)
         if not info:
@@ -761,6 +758,16 @@ class Redeemer:
 
         if cid in self._redeemed:
             return True
+
+        # ── Balance pre-check: skip if no tokens to redeem ──────────────
+        if token_ids and self.w3:
+            amounts = self._get_token_balances(token_ids)
+            if all(a == 0 for a in amounts):
+                print(f"[REDEEM] {slug}: all token balances = 0 — already redeemed, skipping")
+                self._redeemed.add(cid)
+                return True
+            total = sum(amounts)
+            print(f"[REDEEM] {slug}: token balances = {amounts} (total={total})")
 
         if not self.is_resolved(cid):
             print(f"[REDEEM] Not yet resolved on-chain: {slug} (cid={cid[:16]}...)")
