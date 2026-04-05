@@ -297,14 +297,20 @@ def _handle_follow_sell(trade_data: dict, direction: str, sell_price: float,
 def _handle_signal(signal: dict):
     """Callback when Signal module emits a bet signal.
 
-    Decision flow (simple, no redundant caps):
-      1. Determine win rate from Bonereaper's entry tier
-      2. Compute max fill price = entry + slippage
-      3. Kelly on fill price → if no edge, skip
-      4. Retry order until window closes or filled
+    Dynamic execution loop:
+      1. Determine win rate from Bonereaper's entry tier (fixed for this signal)
+      2. Loop until window closes:
+         a. Fetch CURRENT market price
+         b. Compute Kelly at current price → if no edge, wait and re-check
+         c. If Kelly positive → place order at current price
+         d. If filled → done. If not → wait 3s and repeat from (a).
+
+    The price is re-evaluated every 3 seconds. If the market dips into
+    profitable range at any point before the window closes, we catch it.
     """
     from src.signal import (WIN_RATE_FULL, WIN_RATE_HALF,
-                            ENTRY_FULL, ENTRY_HALF, SLIPPAGE)
+                            ENTRY_FULL, ENTRY_HALF)
+    from src.polymarket import fetch_price
 
     if state.kill_switch:
         return
@@ -321,72 +327,108 @@ def _handle_signal(signal: dict):
     is_live = _executor and _executor.enabled and not state.sim_mode
     mode = "live" if is_live else "simulation"
 
-    # ── Step 1: Win rate from tier (Bonereaper's entry = signal quality) ──
+    # ── Win rate from tier (Bonereaper's entry = signal quality) ──
     if entry_price < ENTRY_FULL:
         win_rate = WIN_RATE_FULL
     elif entry_price < ENTRY_HALF:
         win_rate = WIN_RATE_HALF
     else:
-        # Signal module should have filtered this, but safety check
         return
 
-    # ── Step 2: Max fill price = entry + slippage ──
-    max_price = min(entry_price + SLIPPAGE, 0.95)
+    # ── Quick initial check: is there ANY chance of edge? ──
+    # Kelly breakeven: price where Kelly = 0 → price = win_rate
+    kelly_breakeven = win_rate
+    print(f"[SIGNAL] {direction} on {slug}: src=${entry_price:.2f} "
+          f"WR={win_rate:.0%} breakeven=${kelly_breakeven:.2f} "
+          f"window={window_remaining:.0f}s")
 
-    # ── Step 3: Kelly is the ONLY gatekeeper ──
-    stake = _compute_kelly_stake(max_price, win_rate, signal_allocation)
-    if stake < 1.0:
-        print(f"[SIGNAL] No Kelly edge at fill=${max_price:.2f} "
-              f"(src=${entry_price:.2f}, WR={win_rate:.0%}) — SKIP")
-        return
-
-    signal["suggested_bet_usd"] = stake
-
-    # ── Step 4: Live execution — retry until window closes ──
+    # ── Live execution: dynamic price-checking loop ──
     order_resp = None
+    fill_price = None
+    stake = 0
     token_id = signal.get("token_id", "")
-    if is_live and _executor and token_id and stake >= 0.50:
-        stake = _executor.cap_amount(stake)
-        market_info = _executor.get_market_info(token_id)
 
-        # Retry until window closes (leave 15s buffer before market settles)
-        retry_interval = 5  # seconds between attempts
+    if is_live and _executor and token_id:
+        market_info = _executor.get_market_info(token_id)
+        neg_risk = market_info.get("neg_risk", False)
+        tick_size = market_info.get("tick_size", "0.01")
+
+        # Loop until window closes (15s buffer before settlement)
+        check_interval = 3  # seconds — fast re-evaluation
         deadline = time.time() + max(0, window_remaining - 15)
         attempt = 0
+        last_log_price = 0
+
         while time.time() < deadline:
             attempt += 1
+            remaining = int(deadline - time.time())
+
+            # (a) Fetch CURRENT market price
+            try:
+                current_price = fetch_price(token_id, side="buy")
+            except Exception:
+                current_price = None
+
+            if not current_price or current_price <= 0.01 or current_price >= 0.99:
+                time.sleep(check_interval)
+                continue
+
+            # (b) Compute Kelly at current price
+            current_stake = _compute_kelly_stake(
+                current_price, win_rate, signal_allocation)
+
+            if current_stake < 1.0:
+                # No edge at current price — log occasionally, wait for dip
+                if attempt == 1 or abs(current_price - last_log_price) >= 0.03:
+                    print(f"[SIGNAL] {slug}: price=${current_price:.2f} "
+                          f"no edge, watching... ({remaining}s left)")
+                    last_log_price = current_price
+                time.sleep(check_interval)
+                continue
+
+            # (c) Kelly positive → place order at current market price
+            current_stake = _executor.cap_amount(current_stake)
             order_resp = _executor.place_market_buy(
                 token_id=token_id,
-                amount_usd=stake,
-                max_price=max_price,
-                neg_risk=market_info.get("neg_risk", False),
-                tick_size=market_info.get("tick_size", "0.01"),
+                amount_usd=current_stake,
+                max_price=current_price,
+                neg_risk=neg_risk,
+                tick_size=tick_size,
             )
+
             if order_resp:
-                if attempt > 1:
-                    print(f"[SIGNAL] Order filled on attempt {attempt} "
-                          f"({int(deadline - time.time())}s left in window)")
+                fill_price = current_price
+                stake = current_stake
+                print(f"[SIGNAL] ✓ FILLED {direction} on {slug} "
+                      f"@ ${current_price:.2f} bet=${current_stake:.2f} "
+                      f"(attempt {attempt}, {remaining}s left)")
                 break
-            remaining = int(deadline - time.time())
-            if remaining > retry_interval:
-                print(f"[SIGNAL] FAK no fill (attempt {attempt}), "
-                      f"retrying... ({remaining}s left)")
-                time.sleep(retry_interval)
-            else:
-                break  # not enough time for another attempt
+
+            # FAK didn't fill — price might have moved, loop back to (a)
+            if attempt <= 3 or attempt % 5 == 0:
+                print(f"[SIGNAL] {slug}: FAK no fill @ ${current_price:.2f}, "
+                      f"re-checking... ({remaining}s left)")
+            time.sleep(check_interval)
 
         if not order_resp:
-            print(f"[SIGNAL] No fill at ${max_price:.2f} — window expired")
+            print(f"[SIGNAL] {slug}: no fill before window close")
             mode = "simulation"
     elif is_live and not token_id:
         mode = "simulation"
 
+    # ── Fallback stake for logging (if no live fill) ──
+    if not fill_price:
+        from src.signal import SLIPPAGE
+        fill_price = min(entry_price + SLIPPAGE, 0.95)
+        stake = _compute_kelly_stake(fill_price, win_rate, signal_allocation)
+
+    signal["suggested_bet_usd"] = stake
+
     bias = signal.get("bias", 0)
     trade_count = signal.get("trade_count", 0)
-
     tag = "LIVE" if mode == "live" else "SIM"
     print(f"[SIGNAL] [{tag}] {direction} on {slug} "
-          f"(src=${entry_price:.2f} fill=${max_price:.2f} "
+          f"(src=${entry_price:.2f} fill=${fill_price:.2f} "
           f"WR={win_rate:.0%} bet=${stake:.2f} "
           f"bias={bias:.0%} {trade_count}t)")
 
@@ -394,12 +436,11 @@ def _handle_signal(signal: dict):
         return
 
     # Record the trade
-    fill_estimate = max_price
-    payout_multiplier = round(1.0 / fill_estimate, 2) if fill_estimate > 0 else 0
+    payout_multiplier = round(1.0 / fill_price, 2) if fill_price > 0 else 0
     bet_record = {
         "event_slug": slug,
         "direction": direction.lower(),
-        "contract_price": fill_estimate,
+        "contract_price": fill_price,
         "payout_multiplier": payout_multiplier,
         "stake_usd": stake,
         "strategy": "signal",
@@ -415,6 +456,7 @@ def _handle_signal(signal: dict):
         "order_id": order_resp.get("orderID"),
         "entry_tier": entry_tier,
         "win_rate": win_rate,
+        "fill_price": fill_price,
         "bias": round(bias, 4),
         "time": datetime.now(timezone.utc).isoformat(),
     }
