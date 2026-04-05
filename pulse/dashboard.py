@@ -357,6 +357,9 @@ async def api_dashboard():
         "reserved": round(state.reserved, 2),
         "betting": round(state.betting_capital, 2),
         "max_drawdown": state.max_drawdown,
+        "accrued_fees": state.total_accrued_fees,
+        "nav_per_share": round(state.nav_per_share, 4),
+        "total_shares": round(state.total_shares, 4),
     }
 
     # Config
@@ -419,6 +422,9 @@ async def api_dashboard():
     # Feed status
     feed_data = _follow_feed.get_status() if _follow_feed else {"connected": False}
 
+    # Investors
+    investor_snapshot = state.get_investor_snapshot()
+
     return JSONResponse({
         "capital": capital_data,
         "config": config_data,
@@ -429,6 +435,7 @@ async def api_dashboard():
         "signal": signal_snapshot,
         "executor": executor_data,
         "feed": feed_data,
+        "investors": investor_snapshot,
     })
 
 
@@ -443,8 +450,6 @@ async def api_update_config(request: Request):
         state.reinvest_rate = max(0, min(1, float(body["reinvest_rate"])))
     if "signal_pct" in body:
         state.signal_pct = max(0, min(100, float(body["signal_pct"])))
-    if "base_capital" in body:
-        state.base_capital = max(10, float(body["base_capital"]))
     if "kill_switch" in body:
         state.kill_switch = bool(body["kill_switch"])
 
@@ -465,6 +470,74 @@ async def api_update_config(request: Request):
             "betting_capital": round(state.betting_capital, 2),
         }
     })
+
+
+# --- Investor Endpoints ---
+
+@app.post("/api/investors")
+async def api_add_investor(request: Request):
+    """Add a new investor."""
+    body = await request.json()
+    name = body.get("name", "").strip()
+    fee_pct = body.get("fee_pct", 5.0) / 100  # percentage → fraction
+    if not name:
+        return JSONResponse({"error": "Name required"}, status_code=400)
+    inv = state.add_investor(name, fee_pct)
+    state.save_follow_state()
+    return JSONResponse({"ok": True, "investor": inv})
+
+
+@app.patch("/api/investors/{index}")
+async def api_update_investor(index: int, request: Request):
+    """Update investor name or fee percentage."""
+    body = await request.json()
+    name = body.get("name")
+    fee_pct = body.get("fee_pct")
+    if fee_pct is not None:
+        fee_pct = fee_pct / 100
+    ok = state.update_investor(index, name=name, fee_pct=fee_pct)
+    if not ok:
+        return JSONResponse({"error": "Invalid investor"}, status_code=400)
+    state.save_follow_state()
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/investors/{index}")
+async def api_remove_investor(index: int):
+    """Remove an investor (must have 0 shares, cannot remove owner)."""
+    ok = state.remove_investor(index)
+    if not ok:
+        return JSONResponse({"error": "Cannot remove (owner or has shares)"}, status_code=400)
+    state.save_follow_state()
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/investors/{index}/deposit")
+async def api_investor_deposit(index: int, request: Request):
+    """Deposit cash — creates shares at current NAV."""
+    body = await request.json()
+    amount = float(body.get("amount", 0))
+    if amount <= 0:
+        return JSONResponse({"error": "Amount must be positive"}, status_code=400)
+    ok = state.deposit(index, amount)
+    if not ok:
+        return JSONResponse({"error": "Invalid deposit"}, status_code=400)
+    state.save_follow_state()
+    return JSONResponse({"ok": True, "nav_per_share": round(state.nav_per_share, 4)})
+
+
+@app.post("/api/investors/{index}/withdraw")
+async def api_investor_withdraw(index: int, request: Request):
+    """Withdraw capital. Fee on profit goes to owner as shares."""
+    body = await request.json()
+    amount = body.get("amount")
+    if amount is not None:
+        amount = float(amount)
+    result = state.withdraw(index, amount)
+    if result is None:
+        return JSONResponse({"error": "Invalid withdrawal"}, status_code=400)
+    state.save_follow_state()
+    return JSONResponse({"ok": True, "withdrawal": result})
 
 
 # --- Signal Endpoints ---

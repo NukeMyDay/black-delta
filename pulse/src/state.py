@@ -26,6 +26,17 @@ class AppState:
         self.signal_pct = 100       # 0-100
         self.kill_switch = False
 
+        # Investors (share-based pooling)
+        self.investors: list[dict] = [{
+            "name": "Owner",
+            "shares": self.base_capital,
+            "invested": self.base_capital,
+            "withdrawn": 0.0,
+            "fee_pct": 0.0,
+            "fee_shares": 0.0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }]
+
         # Daily stats tracking
         self._daily_date = ""
         self._daily_pnl = 0.0
@@ -75,6 +86,28 @@ class AppState:
         return mapping.get(self.risk_level, 0.25)
 
     @property
+    def total_shares(self) -> float:
+        return sum(inv["shares"] for inv in self.investors)
+
+    @property
+    def nav_per_share(self) -> float:
+        ts = self.total_shares
+        if ts <= 0:
+            return 1.0
+        return self.betting_capital / ts
+
+    @property
+    def total_accrued_fees(self) -> float:
+        nav = self.nav_per_share
+        total = 0.0
+        for inv in self.investors:
+            current_value = inv["shares"] * nav
+            net_deposited = inv["invested"] - inv["withdrawn"]
+            profit = current_value - net_deposited
+            total += max(0, profit) * inv["fee_pct"]
+        return round(total, 2)
+
+    @property
     def max_drawdown(self):
         current = self.betting_capital
         if self._peak_capital <= 0:
@@ -103,6 +136,140 @@ class AppState:
             current = self.betting_capital
             if current > self._peak_capital:
                 self._peak_capital = current
+
+    # ------------------------------------------------------------------
+    #  Investors (share-based pooling)
+    # ------------------------------------------------------------------
+    def add_investor(self, name: str, fee_pct: float = 0.05) -> dict:
+        """Add a new investor with 0 shares."""
+        with self._lock:
+            inv = {
+                "name": name,
+                "shares": 0.0,
+                "invested": 0.0,
+                "withdrawn": 0.0,
+                "fee_pct": max(0.0, min(1.0, fee_pct)),
+                "fee_shares": 0.0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.investors.append(inv)
+            return inv
+
+    def remove_investor(self, index: int) -> bool:
+        """Remove an investor (cannot remove owner at index 0). Must have 0 shares."""
+        with self._lock:
+            if index <= 0 or index >= len(self.investors):
+                return False
+            if self.investors[index]["shares"] > 0.001:
+                return False
+            self.investors.pop(index)
+            return True
+
+    def update_investor(self, index: int, name: str = None, fee_pct: float = None) -> bool:
+        """Update investor name or fee percentage."""
+        with self._lock:
+            if index < 0 or index >= len(self.investors):
+                return False
+            if name is not None:
+                self.investors[index]["name"] = name
+            if fee_pct is not None and index > 0:
+                self.investors[index]["fee_pct"] = max(0.0, min(1.0, fee_pct))
+            return True
+
+    def deposit(self, index: int, amount: float) -> bool:
+        """Deposit cash — creates new shares at current NAV."""
+        with self._lock:
+            if index < 0 or index >= len(self.investors) or amount <= 0:
+                return False
+            nav = self.nav_per_share
+            new_shares = amount / nav
+            self.investors[index]["shares"] += new_shares
+            self.investors[index]["invested"] += amount
+            self.base_capital += amount
+            # Update peak for drawdown tracking
+            current = self.betting_capital
+            if current > self._peak_capital:
+                self._peak_capital = current
+            return True
+
+    def withdraw(self, index: int, amount: float = None) -> dict | None:
+        """Withdraw capital. Fee on positive profit goes to owner as shares."""
+        with self._lock:
+            if index < 0 or index >= len(self.investors):
+                return None
+            inv = self.investors[index]
+            nav = self.nav_per_share
+            current_value = inv["shares"] * nav
+
+            if amount is None or amount >= current_value:
+                amount = current_value
+
+            if amount <= 0 or amount > current_value + 0.01:
+                return None
+
+            shares_to_redeem = amount / nav
+
+            # Cost basis (proportional)
+            net_deposited = inv["invested"] - inv["withdrawn"]
+            withdraw_fraction = shares_to_redeem / inv["shares"] if inv["shares"] > 0 else 1.0
+            cost_of_withdrawn = net_deposited * withdraw_fraction
+            profit = amount - cost_of_withdrawn
+
+            # Fee on positive profit only
+            fee_pct = inv["fee_pct"]
+            fee_amount = max(0, profit) * fee_pct
+            fee_shares = fee_amount / nav if nav > 0 else 0
+
+            net_payout = amount - fee_amount
+
+            # Update investor
+            inv["shares"] -= shares_to_redeem
+            inv["withdrawn"] += net_payout
+            inv["fee_shares"] += fee_shares
+
+            # Transfer fee shares to owner
+            if fee_shares > 0 and index > 0:
+                self.investors[0]["shares"] += fee_shares
+
+            # Cash leaves the fund
+            self.base_capital -= net_payout
+
+            return {
+                "gross": round(amount, 2),
+                "profit": round(profit, 2),
+                "fee_pct": fee_pct,
+                "fee_amount": round(fee_amount, 2),
+                "net_payout": round(net_payout, 2),
+                "shares_redeemed": round(shares_to_redeem, 4),
+                "fee_shares_to_owner": round(fee_shares, 4),
+            }
+
+    def get_investor_snapshot(self) -> list[dict]:
+        """Return investor data for the API."""
+        with self._lock:
+            nav = self.nav_per_share
+            result = []
+            for i, inv in enumerate(self.investors):
+                current_value = inv["shares"] * nav
+                net_deposited = inv["invested"] - inv["withdrawn"]
+                profit = current_value - net_deposited
+                fee_pct = inv["fee_pct"]
+                accrued_fee = max(0, profit) * fee_pct
+                netto = current_value - accrued_fee
+                result.append({
+                    "index": i,
+                    "name": inv["name"],
+                    "is_owner": i == 0,
+                    "shares": round(inv["shares"], 4),
+                    "invested": round(inv["invested"], 2),
+                    "withdrawn": round(inv["withdrawn"], 2),
+                    "current_value": round(current_value, 2),
+                    "profit": round(profit, 2),
+                    "fee_pct": round(fee_pct * 100, 1),
+                    "accrued_fee": round(accrued_fee, 2),
+                    "netto": round(netto, 2),
+                })
+            return result
 
     # ------------------------------------------------------------------
     #  Follow Mode
@@ -297,6 +464,7 @@ class AppState:
                 "risk_level": self.risk_level,
                 "signal_pct": self.signal_pct,
                 "peak_capital": self._peak_capital,
+                "investors": self.investors,
                 "saved_at": datetime.now(timezone.utc).isoformat(),
             }
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -335,6 +503,21 @@ class AppState:
             self.risk_level = data.get("risk_level", self.risk_level)
             self.signal_pct = data.get("signal_pct", self.signal_pct)
             self._peak_capital = data.get("peak_capital", self._peak_capital)
+
+            # Investors (backward compatible — create owner if missing)
+            investors = data.get("investors", [])
+            if investors:
+                self.investors = investors
+            else:
+                self.investors = [{
+                    "name": "Owner",
+                    "shares": self.base_capital,
+                    "invested": self.base_capital,
+                    "withdrawn": 0.0,
+                    "fee_pct": 0.0,
+                    "fee_shares": 0.0,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }]
 
         saved_at = data.get("saved_at", "unknown")
         print(f"[STATE] Follow state restored from disk (saved {saved_at})")
