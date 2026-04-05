@@ -231,18 +231,61 @@ class Redeemer:
             return False
 
     def queue_resolved_trades(self, trades):
-        """Scan trade list on startup and queue all resolved slugs for redemption."""
+        """Scan trade list on startup — only queue slugs that still have tokens.
+
+        For each resolved slug: fetch market info, check ERC-1155 balances
+        on-chain. If all balances are 0, skip silently (already redeemed).
+        Only slugs with actual token holdings get queued for redemption.
+        """
         seen = set()
-        queued = 0
+        candidates = []
         for t in trades:
             if t.get("outcome") in ("win", "lose") and t.get("event_slug"):
                 slug = t["event_slug"]
                 if slug not in seen:
                     seen.add(slug)
-                    self.queue_redeem(slug)
-                    queued += 1
-        if queued:
-            print(f"[REDEEM] Startup: queued {queued} resolved slugs for redemption")
+                    candidates.append(slug)
+
+        if not candidates:
+            return
+
+        print(f"[REDEEM] Startup: checking {len(candidates)} resolved slugs for remaining tokens...")
+
+        queued = 0
+        skipped = 0
+        no_info = 0
+
+        for slug in candidates:
+            # Fetch market info (conditionId + token IDs)
+            try:
+                info = self.get_market_info(slug)
+            except Exception:
+                info = None
+
+            if not info or not info.get("token_ids"):
+                # Can't check balances — queue it, sweep will handle
+                self.queue_redeem(slug, info.get("neg_risk", False) if info else False)
+                no_info += 1
+                queued += 1
+                continue
+
+            # Check on-chain token balances (free eth_call, no gas)
+            if self.w3 and self.w3.is_connected():
+                try:
+                    amounts = self._get_token_balances(info["token_ids"])
+                    if all(a == 0 for a in amounts):
+                        # Already redeemed — mark and skip
+                        self._redeemed.add(info["condition_id"])
+                        skipped += 1
+                        continue
+                except Exception:
+                    pass  # balance check failed — queue it to be safe
+
+            self.queue_redeem(slug, info.get("neg_risk", False))
+            queued += 1
+
+        print(f"[REDEEM] Startup: {skipped} already redeemed, {queued} queued"
+              f"{f' ({no_info} without token info)' if no_info else ''}")
 
     def get_market_info(self, slug: str) -> dict | None:
         """Get conditionId, neg_risk, and token_ids for a market from Gamma API."""
