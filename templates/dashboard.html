@@ -435,41 +435,33 @@ body {
     <div class="control-group">
       <div class="control-label">Risk Level</div>
       <div class="ctrl-input-row">
-        <input type="number" class="ctrl-input" id="risk-input" min="1" max="10" value="5" oninput="updateRiskLabel(+this.value)">
+        <input type="number" class="ctrl-input" id="risk-input" min="1" max="10" value="5" onchange="onRiskChange(this.value)">
         <span class="ctrl-unit">/ 10 &nbsp;<span id="risk-label" style="color:var(--text-dim);font-size:10px">(Optimal)</span></span>
       </div>
     </div>
     <div class="control-group">
       <div class="control-label">Reinvest Rate</div>
       <div class="ctrl-input-row">
-        <input type="number" class="ctrl-input" id="reinvest-input" min="0" max="100" value="80">
+        <input type="number" class="ctrl-input" id="reinvest-input" min="0" max="100" value="80" onchange="onReinvestChange(this.value)">
         <span class="ctrl-unit">%</span>
       </div>
     </div>
     <div class="control-group">
       <div class="control-label">Signal Allocation</div>
       <div class="ctrl-input-row">
-        <input type="number" class="ctrl-input" id="mix-input" min="0" max="100" value="100" oninput="setText('mix-label','/ '+(100-this.value)+'% Follow')">
+        <input type="number" class="ctrl-input" id="mix-input" min="0" max="100" value="100" onchange="onMixChange(this.value)">
         <span class="ctrl-unit">% Signal &nbsp;<span id="mix-label" style="color:var(--text-dim);font-size:10px">/ 0% Follow</span></span>
       </div>
     </div>
     <div class="control-group">
       <div class="control-label">Daily Loss Limit</div>
       <div class="ctrl-input-row">
-        <input type="number" class="ctrl-input" id="loss-input" min="1" max="90" value="10">
+        <input type="number" class="ctrl-input" id="loss-input" min="1" max="90" value="10" onchange="onLossLimitChange(this.value)">
         <span class="ctrl-unit">% &nbsp;<span id="loss-label" style="color:var(--text-dim);font-size:10px">($0)</span></span>
       </div>
     </div>
   </div>
-  <div style="display:flex;align-items:center;gap:12px;margin:-12px 0 var(--spacing-lg) 0">
-    <button id="apply-btn" onclick="applyConfig()" style="
-      background:var(--accent);color:#000;border:none;border-radius:6px;
-      padding:7px 20px;font-size:12px;font-weight:700;font-family:var(--font);
-      text-transform:uppercase;letter-spacing:0.6px;cursor:pointer;
-      transition:opacity 0.15s;
-    " onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">Apply</button>
-    <span id="apply-status" style="font-size:11px;color:var(--green);opacity:0;transition:opacity 0.3s"></span>
-  </div>
+  <div id="config-toast" style="font-size:11px;color:var(--green);margin:-12px 0 var(--spacing-md) 0;height:16px;opacity:0;transition:opacity 0.3s"></div>
 
   <!-- Chart -->
   <div class="chart-wrap">
@@ -771,47 +763,43 @@ function updateRiskLabel(v) {
 }
 
 let configTimer = null;
-function applyConfig() {
-  const risk = Math.max(1, Math.min(10, +document.getElementById('risk-input').value));
-  const reinvest = Math.max(0, Math.min(100, +document.getElementById('reinvest-input').value));
-  const sigPct = Math.max(0, Math.min(100, +document.getElementById('mix-input').value));
-  const lossLim = Math.max(1, Math.min(90, +document.getElementById('loss-input').value));
-
-  // Clamp displayed values
-  document.getElementById('risk-input').value = risk;
-  document.getElementById('reinvest-input').value = reinvest;
-  document.getElementById('mix-input').value = sigPct;
-  document.getElementById('loss-input').value = lossLim;
-
-  const patch = {
-    risk_level: risk,
-    reinvest_rate: reinvest / 100,
-    signal_pct: sigPct,
-    daily_loss_limit_pct: lossLim,
-  };
-
-  const btn = document.getElementById('apply-btn');
-  const status = document.getElementById('apply-status');
-  btn.disabled = true;
-  btn.textContent = '...';
-
-  fetch('/api/config', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) })
-    .then(r => r.json())
-    .then(() => {
-      status.textContent = 'Settings applied';
-      status.style.opacity = '1';
-      setTimeout(() => { status.style.opacity = '0'; }, 2500);
-    })
-    .catch(() => {
-      status.textContent = 'Failed to apply';
-      status.style.color = 'var(--red)';
-      status.style.opacity = '1';
-      setTimeout(() => { status.style.opacity = '0'; status.style.color = 'var(--green)'; }, 2500);
-    })
-    .finally(() => {
-      btn.disabled = false;
-      btn.textContent = 'Apply';
-    });
+function showToast(msg, ok) {
+  const t = document.getElementById('config-toast');
+  t.textContent = msg;
+  t.style.color = ok ? 'var(--green)' : 'var(--red)';
+  t.style.opacity = '1';
+  setTimeout(() => { t.style.opacity = '0'; }, 2000);
+}
+function sendConfig(patch) {
+  clearTimeout(configTimer);
+  configTimer = setTimeout(() => {
+    fetch('/api/config', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) })
+      .then(r => r.json())
+      .then(() => showToast('Applied', true))
+      .catch(() => showToast('Failed', false));
+  }, 400);
+}
+function onRiskChange(v) {
+  v = Math.max(1, Math.min(10, +v));
+  document.getElementById('risk-input').value = v;
+  updateRiskLabel(v);
+  sendConfig({ risk_level: v });
+}
+function onReinvestChange(v) {
+  v = Math.max(0, Math.min(100, +v));
+  document.getElementById('reinvest-input').value = v;
+  sendConfig({ reinvest_rate: v / 100 });
+}
+function onMixChange(v) {
+  v = Math.max(0, Math.min(100, +v));
+  document.getElementById('mix-input').value = v;
+  setText('mix-label', `/ ${100-v}% Follow`);
+  sendConfig({ signal_pct: v });
+}
+function onLossLimitChange(v) {
+  v = Math.max(1, Math.min(90, +v));
+  document.getElementById('loss-input').value = v;
+  sendConfig({ daily_loss_limit_pct: v });
 }
 function updateModeBtn(kill_switch, sim_mode) {
   const btns = ['btn-active','btn-sim','btn-paused'];

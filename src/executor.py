@@ -62,6 +62,12 @@ class Executor:
             print("[EXEC] Missing POLY_* credentials in .env — executor disabled")
             return False
 
+        # Auto-detect signature type:
+        # - If POLY_FUNDER_ADDRESS is set → GNOSIS_SAFE (2), proxy wallet flow
+        # - If not set → EOA (0), direct wallet signing
+        sig_type = 2 if funder else 0
+        sig_label = "GNOSIS_SAFE" if sig_type == 2 else "EOA"
+
         try:
             creds = ApiCreds(
                 api_key=api_key,
@@ -73,7 +79,7 @@ class Executor:
                 chain_id=137,
                 key=private_key,
                 creds=creds,
-                signature_type=2,  # GNOSIS_SAFE (default for new accounts)
+                signature_type=sig_type,
                 funder=funder,
             )
             # Verify credentials with a lightweight call
@@ -81,14 +87,10 @@ class Executor:
             self.enabled = True
             signer_addr = self.client.signer.address()
             funder_addr = self.client.builder.funder
-            sig_type = self.client.builder.sig_type
             print(f"[EXEC] Executor initialized — LIVE trading enabled")
             print(f"[EXEC]   Signer:  {signer_addr}")
             print(f"[EXEC]   Funder:  {funder_addr}")
-            print(f"[EXEC]   SigType: {sig_type} ({'EOA' if sig_type == 0 else 'POLY_PROXY' if sig_type == 1 else 'GNOSIS_SAFE' if sig_type == 2 else 'unknown'})")
-            if signer_addr == funder_addr and sig_type == 2:
-                print(f"[EXEC]   WARNING: sig_type=2 (GNOSIS_SAFE) but funder==signer.")
-                print(f"[EXEC]   Set POLY_FUNDER_ADDRESS to your proxy wallet if orders fail.")
+            print(f"[EXEC]   SigType: {sig_type} ({sig_label})")
             return True
         except Exception as e:
             print(f"[EXEC] Initialization failed: {e}")
@@ -278,8 +280,8 @@ class Executor:
         try:
             params = BalanceAllowanceParams(
                 asset_type=AssetType.COLLATERAL,
-                signature_type=2,
             )
+            # Let the library auto-set signature_type from builder.sig_type
             result = self.client.get_balance_allowance(params)
             if result and hasattr(result, "balance"):
                 return round(float(result.balance), 2)
