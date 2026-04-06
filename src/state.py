@@ -23,10 +23,10 @@ class AppState:
         self.base_capital = float(start_capital)  # fallback if Polymarket balance unavailable
         self.polymarket_balance: float | None = None  # live balance from Polymarket API
         self.betting_capital_fixed: float | None = None  # absolute $ override (None = use Polymarket balance)
-        self.risk_level = 5         # 1-10, maps to Kelly fraction
         self.kill_switch = True     # Paused by default — must be activated manually
         self.pause_reason: str | None = None  # human-readable reason if auto-paused
         self.sim_mode = False       # Sim: record bets but don't place real orders
+        self.max_bet_per_window: float | None = None  # Phase strategy: max $ per 5-min window
 
         # Investors (friends only — owner is not listed)
         self.investors: list[dict] = []
@@ -89,16 +89,6 @@ class AppState:
         if self.polymarket_balance is not None:
             return self.polymarket_balance
         return self.base_capital + self.follow_pnl
-
-    @property
-    def kelly_fraction(self):
-        # Conservative for 5-min binary markets with real money.
-        # Level 5 = 1/8 Kelly (textbook "conservative"). Level 1 = 1/40.
-        mapping = {
-            1: 1/40, 2: 1/32, 3: 1/24, 4: 1/16, 5: 1/8,
-            6: 3/16, 7: 1/4, 8: 5/16, 9: 3/8, 10: 1/2,
-        }
-        return mapping.get(self.risk_level, 1/8)
 
     @property
     def total_shares(self) -> float:
@@ -523,7 +513,6 @@ class AppState:
                 # Capital config
                 "base_capital": self.base_capital,
                 "betting_capital_fixed": self.betting_capital_fixed,
-                "risk_level": self.risk_level,
                 "peak_capital": self._peak_capital,
                 "start_of_day_balance": self._start_of_day_balance,
                 "kill_switch": self.kill_switch,
@@ -570,7 +559,6 @@ class AppState:
             else:
                 # Migrate from old reinvest_rate: ignore, just leave as None
                 self.betting_capital_fixed = None
-            self.risk_level = data.get("risk_level", self.risk_level)
             self._peak_capital = max(data.get("peak_capital", self._peak_capital), self.base_capital)
             self._start_of_day_balance = data.get("start_of_day_balance", self._start_of_day_balance)
             if "kill_switch" in data:
