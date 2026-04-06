@@ -1,0 +1,138 @@
+"""
+Chainlink BTC/USD Price Feed — Polygon mainnet.
+
+Polymarket resolves BTC Up/Down markets using this exact Chainlink oracle.
+Reading from it directly gives us the TRUE reference price that determines
+WIN/LOSE — not a Binance approximation that could diverge on close calls.
+
+Resolution source (from Polymarket market data):
+  https://data.chain.link/streams/btc-usd
+
+Usage:
+    price = get_btc_price()       # Latest BTC/USD from Chainlink
+    price, ts = get_btc_price_with_timestamp()  # + update timestamp
+"""
+
+import logging
+import time
+import threading
+from web3 import Web3
+
+log = logging.getLogger("chainlink")
+
+# Polygon mainnet public RPCs (fallback chain)
+POLYGON_RPCS = [
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://rpc.ankr.com/polygon",
+    "https://polygon.drpc.org",
+]
+
+# Chainlink BTC/USD Aggregator on Polygon
+# https://docs.chain.link/data-feeds/price-feeds/addresses?network=polygon
+BTC_USD_FEED = "0xc907E116054Ad103354f2D350FD2514433D57F6f"
+
+# Minimal AggregatorV3Interface ABI (only what we need)
+AGGREGATOR_ABI = [
+    {
+        "inputs": [],
+        "name": "latestRoundData",
+        "outputs": [
+            {"name": "roundId", "type": "uint80"},
+            {"name": "answer", "type": "int256"},
+            {"name": "startedAt", "type": "uint256"},
+            {"name": "updatedAt", "type": "uint256"},
+            {"name": "answeredInRound", "type": "uint80"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
+# Module-level cache (thread-safe via GIL for simple reads)
+_cache_price: float = 0.0
+_cache_ts: float = 0.0
+_cache_updated_at: int = 0  # Chainlink's updatedAt timestamp
+_cache_lock = threading.Lock()
+
+# Cache TTL — Chainlink updates every ~27s on Polygon, no need to hammer
+CACHE_TTL = 3.0  # seconds
+
+_w3: Web3 | None = None
+_contract = None
+_decimals: int = 8
+
+
+def _init():
+    """Lazy-init Web3 connection and contract, trying multiple RPCs."""
+    global _w3, _contract, _decimals
+    if _w3 is not None:
+        return True
+    for rpc in POLYGON_RPCS:
+        try:
+            w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 5}))
+            if not w3.is_connected():
+                continue
+            contract = w3.eth.contract(
+                address=Web3.to_checksum_address(BTC_USD_FEED),
+                abi=AGGREGATOR_ABI,
+            )
+            _decimals = contract.functions.decimals().call()
+            _w3 = w3
+            _contract = contract
+            log.info("Chainlink BTC/USD initialized via %s (decimals=%d)", rpc, _decimals)
+            return True
+        except Exception as e:
+            log.debug("Chainlink RPC %s failed: %s", rpc, e)
+            continue
+    log.error("Chainlink init failed: no working RPC")
+    return False
+
+
+def get_btc_price() -> float:
+    """Get latest BTC/USD price from Chainlink on Polygon.
+
+    Returns 0.0 on failure. Cached for CACHE_TTL seconds.
+    """
+    price, _ = get_btc_price_with_timestamp()
+    return price
+
+
+def get_btc_price_with_timestamp() -> tuple[float, int]:
+    """Get BTC/USD price and Chainlink's updatedAt timestamp.
+
+    Returns (price, updatedAt_unix) or (0.0, 0) on failure.
+    """
+    global _cache_price, _cache_ts, _cache_updated_at
+
+    now = time.time()
+    if now - _cache_ts < CACHE_TTL and _cache_price > 0:
+        return _cache_price, _cache_updated_at
+
+    if not _init():
+        return _cache_price, _cache_updated_at  # return stale if available
+
+    try:
+        result = _contract.functions.latestRoundData().call()
+        # result = (roundId, answer, startedAt, updatedAt, answeredInRound)
+        answer = result[1]
+        updated_at = result[3]
+
+        price = answer / (10 ** _decimals)
+
+        with _cache_lock:
+            _cache_price = price
+            _cache_ts = now
+            _cache_updated_at = updated_at
+
+        return price, updated_at
+
+    except Exception as e:
+        log.warning("Chainlink price fetch failed: %s", e)
+        return _cache_price, _cache_updated_at

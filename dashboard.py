@@ -1,13 +1,8 @@
 """
-BLACK DELTA — Polymarket Copy-Trading Dashboard
+BLACK DELTA — Polymarket Trading Dashboard
 
-Monitors Bonereaper's trades via RTDS WebSocket and places bets
-using two strategies:
-  - Signal: filtered bets (scout→flip check→Kelly sizing, ~73% WR)
-  - Follow: proportional copy of all trades (Kelly sizing)
-
-Capital management with configurable risk level, reinvestment rate,
-and strategy mix. Supports live trading via Polymarket CLOB API.
+Phase-based Bonereaper replication strategy with real-time BTC price feed.
+Monitors Bonereaper via RTDS WebSocket for analysis and tracking.
 
 Usage:
     python dashboard.py              # Start dashboard
@@ -36,10 +31,12 @@ from src.polymarket import fetch_market_outcome
 from src.follow_feed import FollowFeed
 from src.executor import Executor
 from src.redeemer import Redeemer
-from src.signal import SignalAggregator
 from src.state import state
 from src.logger import log_trade
 from src.analysis_logger import AnalysisLogger
+from src.binance_ws import BinancePriceFeed
+from src.phase_strategy import PhaseStrategy
+from src.pulse_strategy import PulseStrategy
 
 load_dotenv()
 
@@ -75,10 +72,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Module-level references
 _follow_feed: FollowFeed | None = None
-_signal: SignalAggregator | None = None
 _executor: Executor | None = None
 _redeemer: Redeemer | None = None
 _analysis: AnalysisLogger | None = None
+_btc_feed: BinancePriceFeed | None = None
+_phase: PhaseStrategy | None = None
+_pulse: PulseStrategy | None = None
 
 
 # ==================================================================
@@ -133,370 +132,6 @@ def resolve_follow_pending():
             slugs_seen[slug] = False
 
 
-def resolve_signal_pending():
-    """Sweep pending signals and resolve against actual market outcomes."""
-    if not _signal:
-        return
-    now = time.time()
-    pending_slugs = _signal.get_pending_slugs()
-
-    for slug in pending_slugs:
-        try:
-            parts = slug.split("-")
-            window_start_ts = int(parts[-1])
-            window_dur = 900 if "15m" in slug else 300
-            window_end_ts = window_start_ts + window_dur
-
-            if now < window_end_ts + 15:
-                continue
-
-            market_winner = fetch_market_outcome(slug)
-            if market_winner:
-                _signal.resolve_signal(slug, market_winner)
-        except (ValueError, IndexError):
-            continue
-
-
-# ==================================================================
-#  Follow Trade Handler
-# ==================================================================
-
-def _compute_kelly_stake(fill_price: float, win_rate: float, allocation: float) -> float:
-    """Compute Kelly-sized bet from fill price and win rate.
-
-    Kelly criterion: f* = (p*b - q) / b
-    Where p=win_rate, q=1-p, b=payout odds (1/price - 1).
-
-    Returns 0 if no edge (Kelly <= 0). This is the ONLY filter needed.
-    """
-    if fill_price >= 0.95 or fill_price <= 0.01:
-        return 0.0
-
-    b = 1.0 / fill_price - 1
-    if b <= 0:
-        return 0.0
-
-    q = 1 - win_rate
-    kelly = max(0, (win_rate * b - q) / b)
-    fraction = kelly * state.kelly_fraction
-    return round(allocation * fraction, 2)
-
-
-# Track which market slugs already have a follow position (one follow per market)
-_followed_slugs: dict[str, float] = {}  # slug → timestamp of follow
-_followed_slugs_lock = threading.Lock()
-
-_FOLLOW_SLUG_COOLDOWN = 600  # 10 min — don't re-follow same slug within this window
-
-
-def handle_follow_trade(trade_data: dict):
-    """Callback when a followed user trades. Handles BUY (open) and SELL (close)."""
-    # Kill switch check
-    if state.kill_switch:
-        return
-
-    side = trade_data.get("side", "").upper()
-    outcome_raw = trade_data.get("outcome", "").lower()
-    direction = "up" if outcome_raw == "up" else "down" if outcome_raw == "down" else outcome_raw
-    price = trade_data.get("price", 0)
-    size = trade_data.get("size", 0)
-    event_slug = trade_data.get("event_slug", "")
-
-    if price <= 0 or price >= 1:
-        return
-
-    if side == "SELL":
-        _handle_follow_sell(trade_data, direction, price, size, event_slug)
-        return
-
-    if side != "BUY":
-        return
-
-    # --- Deduplication: one follow per market slug ---
-    # Bonereaper places many trades on the same market; we only follow once.
-    now = time.time()
-    with _followed_slugs_lock:
-        # Cleanup expired entries
-        expired = [s for s, ts in _followed_slugs.items() if now - ts > _FOLLOW_SLUG_COOLDOWN]
-        for s in expired:
-            del _followed_slugs[s]
-
-        if event_slug in _followed_slugs:
-            return  # Already have a position on this market
-        _followed_slugs[event_slug] = now
-
-    # --- BUY: open a new position ---
-    from src.signal import WIN_RATE_FULL, ENTRY_FULL, SLIPPAGE
-
-    # Capital allocation: follow gets remaining % (signal = 100%)
-    follow_allocation = 0  # follow disabled, all capital to signal
-
-    # Kelly on fill price — same logic as signals, single gatekeeper
-    max_price = min(price + SLIPPAGE, 0.95)
-    stake = _compute_kelly_stake(max_price, WIN_RATE_FULL, follow_allocation)
-    if stake < 0.50:
-        return  # No edge or allocation too small
-
-    is_live = _executor and _executor.enabled and not state.sim_mode
-    mode = "live" if is_live else "simulation"
-
-    # --- Live execution with retry ---
-    order_resp = None
-    if is_live and _executor:
-        token_id = trade_data.get("asset", "")
-        if token_id:
-            stake = _executor.cap_amount(stake)
-            market_info = _executor.get_market_info(token_id)
-
-            # Retry FAK up to 5 times with 3s delay (follow = single trade, no window)
-            max_retries = 5
-            retry_delay = 3
-            for attempt in range(1, max_retries + 1):
-                order_resp = _executor.place_market_buy(
-                    token_id=token_id,
-                    amount_usd=stake,
-                    max_price=max_price,
-                    neg_risk=market_info.get("neg_risk", False),
-                    tick_size=market_info.get("tick_size", "0.01"),
-                )
-                if order_resp:
-                    if attempt > 1:
-                        print(f"[FOLLOW] Order filled on attempt {attempt}/{max_retries}")
-                    break
-                if attempt < max_retries:
-                    print(f"[FOLLOW] FAK no fill (attempt {attempt}/{max_retries}), retry in {retry_delay}s...")
-                    time.sleep(retry_delay)
-
-            if not order_resp:
-                print(f"[FOLLOW] All {max_retries} attempts failed — no fill at ${max_price:.2f}")
-                mode = "simulation"
-        else:
-            mode = "simulation"
-
-    tag = "LIVE" if mode == "live" else "SIM"
-    print(f"[FOLLOW] [{tag}] BUY {direction.upper()} @ ${price:.2f} "
-          f"${stake:.2f} from {trade_data.get('name', '') or 'unknown'}")
-
-    # Only record bets that were actually placed on Polymarket
-    if mode != "live" or not order_resp:
-        return
-
-    # Use max_price as recorded entry — closest estimate to actual fill price
-    fill_estimate = max_price
-    payout_multiplier = round(1.0 / fill_estimate, 2) if fill_estimate > 0 else 0
-    copy_trade = {
-        "event_slug": event_slug,
-        "direction": direction,
-        "contract_price": fill_estimate,
-        "payout_multiplier": payout_multiplier,
-        "stake_usd": stake,
-        "strategy": "follow",
-        "source_wallet": trade_data.get("wallet", ""),
-        "source_name": trade_data.get("name", ""),
-        "source_size": size,
-        "source_cost": round(price * size, 2),
-        "source_price": price,
-        "source_entry": price,  # Source user's entry for reference
-        "tx_hash": trade_data.get("tx_hash", ""),
-        "slug": trade_data.get("slug", ""),
-        "title": trade_data.get("title", ""),
-        "outcome": "pending",
-        "pnl_usd": 0,
-        "bet_placed": True,
-        "mode": "live",
-        "order_id": order_resp.get("orderID"),
-        "time": datetime.now(timezone.utc).isoformat(),
-        "detected_at": trade_data.get("detected_at", time.time()),
-    }
-    state.record_follow_trade(copy_trade)
-
-
-def _handle_follow_sell(trade_data: dict, direction: str, sell_price: float,
-                        sell_size: float, event_slug: str):
-    """Close pending follow positions when the source user sells."""
-    state.record_follow_sell_event()
-    closed = state.close_follow_trades(event_slug, direction, sell_price, sell_size)
-    if closed > 0:
-        name = trade_data.get("name", "") or "unknown"
-        print(f"[FOLLOW] SELL: closed {closed} {direction.upper()} position(s) "
-              f"@ ${sell_price:.2f} x{sell_size:.1f} from {name}")
-
-
-# ==================================================================
-#  Signal Handler
-# ==================================================================
-
-def _handle_signal(signal: dict):
-    """Callback when Signal module emits a bet signal.
-
-    Dynamic execution loop:
-      1. Determine win rate from Bonereaper's entry tier (fixed for this signal)
-      2. Loop until window closes:
-         a. Fetch CURRENT market price
-         b. Compute Kelly at current price → if no edge, wait and re-check
-         c. If Kelly positive → place order at current price
-         d. If filled → done. If not → wait 3s and repeat from (a).
-
-    The price is re-evaluated every 3 seconds. If the market dips into
-    profitable range at any point before the window closes, we catch it.
-    """
-    from src.signal import (WIN_RATE_FULL, WIN_RATE_HALF,
-                            ENTRY_FULL, ENTRY_HALF)
-    from src.polymarket import fetch_price
-
-    if state.kill_switch:
-        return
-
-    direction = signal.get("direction", "?").upper()
-    slug = signal.get("slug", "")
-    entry_price = signal.get("avg_entry_price", 0)
-    entry_tier = signal.get("entry_tier", "?")
-    window_remaining = signal.get("window_remaining_s", 0)
-
-    # Capital allocation (100% signal)
-    signal_allocation = state.betting_capital
-
-    is_live = _executor and _executor.enabled and not state.sim_mode
-    mode = "live" if is_live else "simulation"
-
-    # ── Win rate from tier (Bonereaper's entry = signal quality) ──
-    if entry_price < ENTRY_FULL:
-        win_rate = WIN_RATE_FULL
-    elif entry_price < ENTRY_HALF:
-        win_rate = WIN_RATE_HALF
-    else:
-        return
-
-    # ── Quick initial check: is there ANY chance of edge? ──
-    # Kelly breakeven: price where Kelly = 0 → price = win_rate
-    kelly_breakeven = win_rate
-    print(f"[SIGNAL] {direction} on {slug}: src=${entry_price:.2f} "
-          f"WR={win_rate:.0%} breakeven=${kelly_breakeven:.2f} "
-          f"window={window_remaining:.0f}s")
-
-    # ── Live execution: dynamic price-checking loop ──
-    order_resp = None
-    fill_price = None
-    stake = 0
-    token_id = signal.get("token_id", "")
-
-    if is_live and _executor and token_id:
-        market_info = _executor.get_market_info(token_id)
-        neg_risk = market_info.get("neg_risk", False)
-        tick_size = market_info.get("tick_size", "0.01")
-
-        # Loop until window closes (15s buffer before settlement)
-        check_interval = 3  # seconds — fast re-evaluation
-        deadline = time.time() + max(0, window_remaining - 15)
-        attempt = 0
-        last_log_price = 0
-
-        while time.time() < deadline:
-            attempt += 1
-            remaining = int(deadline - time.time())
-
-            # (a) Fetch CURRENT market price
-            try:
-                current_price = fetch_price(token_id, side="buy")
-            except Exception:
-                current_price = None
-
-            if not current_price or current_price <= 0.01 or current_price >= 0.99:
-                time.sleep(check_interval)
-                continue
-
-            # (b) Compute Kelly at current price
-            current_stake = _compute_kelly_stake(
-                current_price, win_rate, signal_allocation)
-
-            if current_stake < 1.0:
-                # No edge at current price — log occasionally, wait for dip
-                if attempt == 1 or abs(current_price - last_log_price) >= 0.03:
-                    print(f"[SIGNAL] {slug}: price=${current_price:.2f} "
-                          f"no edge, watching... ({remaining}s left)")
-                    last_log_price = current_price
-                time.sleep(check_interval)
-                continue
-
-            # (c) Kelly positive → place order at current market price
-            current_stake = _executor.cap_amount(current_stake)
-            order_resp = _executor.place_market_buy(
-                token_id=token_id,
-                amount_usd=current_stake,
-                max_price=current_price,
-                neg_risk=neg_risk,
-                tick_size=tick_size,
-            )
-
-            if order_resp:
-                fill_price = current_price
-                stake = current_stake
-                print(f"[SIGNAL] ✓ FILLED {direction} on {slug} "
-                      f"@ ${current_price:.2f} bet=${current_stake:.2f} "
-                      f"(attempt {attempt}, {remaining}s left)")
-                break
-
-            # FAK didn't fill — price might have moved, loop back to (a)
-            if attempt <= 3 or attempt % 5 == 0:
-                print(f"[SIGNAL] {slug}: FAK no fill @ ${current_price:.2f}, "
-                      f"re-checking... ({remaining}s left)")
-            time.sleep(check_interval)
-
-        if not order_resp:
-            print(f"[SIGNAL] {slug}: no fill before window close")
-            mode = "simulation"
-    elif is_live and not token_id:
-        mode = "simulation"
-
-    # ── Fallback stake for logging (if no live fill) ──
-    if not fill_price:
-        from src.signal import SLIPPAGE
-        fill_price = min(entry_price + SLIPPAGE, 0.95)
-        stake = _compute_kelly_stake(fill_price, win_rate, signal_allocation)
-
-    signal["suggested_bet_usd"] = stake
-
-    bias = signal.get("bias", 0)
-    trade_count = signal.get("trade_count", 0)
-    tag = "LIVE" if mode == "live" else "SIM"
-    print(f"[SIGNAL] [{tag}] {direction} on {slug} "
-          f"(src=${entry_price:.2f} fill=${fill_price:.2f} "
-          f"WR={win_rate:.0%} bet=${stake:.2f} "
-          f"bias={bias:.0%} {trade_count}t)")
-
-    if mode != "live" or not order_resp:
-        return
-
-    # Record the trade
-    payout_multiplier = round(1.0 / fill_price, 2) if fill_price > 0 else 0
-    bet_record = {
-        "event_slug": slug,
-        "direction": direction.lower(),
-        "contract_price": fill_price,
-        "payout_multiplier": payout_multiplier,
-        "stake_usd": stake,
-        "strategy": "signal",
-        "source_wallet": "signal",
-        "source_name": "Signal",
-        "source_entry": entry_price,
-        "slug": slug,
-        "title": slug,
-        "outcome": "pending",
-        "pnl_usd": 0,
-        "bet_placed": True,
-        "mode": "live",
-        "order_id": order_resp.get("orderID"),
-        "entry_tier": entry_tier,
-        "win_rate": win_rate,
-        "fill_price": fill_price,
-        "bias": round(bias, 4),
-        "up_usdc": signal.get("up_usdc", 0),
-        "down_usdc": signal.get("down_usdc", 0),
-        "total_usdc": signal.get("total_usdc", 0),
-        "trade_count": signal.get("trade_count", 0),
-        "time": datetime.now(timezone.utc).isoformat(),
-    }
-    state.record_follow_trade(bet_record)
 
 
 # ==================================================================
@@ -508,7 +143,6 @@ def _resolution_loop():
     while True:
         try:
             resolve_follow_pending()
-            resolve_signal_pending()
         except Exception as e:
             print(f"[RESOLVE] Error: {e}")
         time.sleep(10)
@@ -529,7 +163,7 @@ def _sync_executor_limits():
     if not _executor:
         return
     # Max bet = 1 full Kelly fraction of capital (actual bets are much smaller via ⅛-Kelly)
-    _executor.max_bet_usd = round(state.betting_capital * state.kelly_fraction, 2)
+    _executor.max_bet_usd = round(state.betting_capital * 0.125, 2)  # 1/8 Kelly
 
 
 def _redeem_sweep_loop(interval: int = 120):
@@ -609,9 +243,8 @@ async def api_dashboard():
 
     # Config
     config_data = {
-        "risk_level": state.risk_level,
-        "kelly_fraction": round(state.kelly_fraction, 4),
         "betting_capital_fixed": state.betting_capital_fixed,
+        "max_bet_per_window": getattr(state, "max_bet_per_window", None),
         "kill_switch": state.kill_switch,
         "pause_reason": state.pause_reason,
         "sim_mode": state.sim_mode,
@@ -666,9 +299,6 @@ async def api_dashboard():
     # Follow stats
     follow_snapshot = state.get_follow_snapshot()
 
-    # Signal stats
-    signal_snapshot = _signal.get_snapshot() if _signal else {}
-
     # Executor status
     executor_data = _executor.get_status() if _executor else {"enabled": False}
 
@@ -681,6 +311,13 @@ async def api_dashboard():
     # Analysis logger status
     analysis_data = _analysis.get_status() if _analysis else {}
 
+    # Phase strategy + BTC feed status
+    phase_data = _phase.get_status() if _phase else {"running": False}
+    btc_data = _btc_feed.status() if _btc_feed else {"connected": False}
+
+    # PULSE strategy status
+    pulse_data = _pulse.get_status() if _pulse else {"running": False}
+
     return JSONResponse({
         "capital": capital_data,
         "config": config_data,
@@ -688,11 +325,13 @@ async def api_dashboard():
         "connections": connections,
         "open_positions": open_positions[:20],
         "follow": follow_snapshot,
-        "signal": signal_snapshot,
         "executor": executor_data,
         "feed": feed_data,
         "investors": investor_snapshot,
         "analysis": analysis_data,
+        "phase": phase_data,
+        "btc_feed": btc_data,
+        "pulse": pulse_data,
     })
 
 
@@ -701,14 +340,18 @@ async def api_update_config(request: Request):
     """Update capital/risk config at runtime."""
     body = await request.json()
 
-    if "risk_level" in body:
-        state.risk_level = max(1, min(10, int(body["risk_level"])))
     if "betting_capital_fixed" in body:
         val = body["betting_capital_fixed"]
         if val is None or val == "" or val == "auto":
             state.betting_capital_fixed = None  # use live balance
         else:
             state.betting_capital_fixed = max(10, float(val))  # min $10
+    if "max_bet_per_window" in body:
+        val = body["max_bet_per_window"]
+        if val is None or val == "" or val == 0:
+            state.max_bet_per_window = None
+        else:
+            state.max_bet_per_window = max(5, min(500, float(val)))
     if "kill_switch" in body:
         new_val = bool(body["kill_switch"])
         state.kill_switch = new_val
@@ -720,21 +363,76 @@ async def api_update_config(request: Request):
     # Re-sync executor limits
     _sync_executor_limits()
 
-    # Update signal module's capital if available
-    if _signal:
-        _signal.sim_capital = state.betting_capital
+    # Sync phase strategy settings
+    if _phase:
+        _phase.paper_mode = state.sim_mode or not (_executor and _executor.enabled)
+        if state.max_bet_per_window is not None:
+            _phase.max_budget = state.max_bet_per_window
 
     return JSONResponse({
         "ok": True,
         "config": {
-            "risk_level": state.risk_level,
-            "kelly_fraction": round(state.kelly_fraction, 4),
             "betting_capital_fixed": state.betting_capital_fixed,
+            "max_bet_per_window": state.max_bet_per_window,
             "kill_switch": state.kill_switch,
             "pause_reason": state.pause_reason,
             "betting_capital": round(state.betting_capital, 2),
         }
     })
+
+
+# --- PULSE Config Endpoint ---
+
+@app.patch("/api/pulse/config")
+async def api_pulse_config(request: Request):
+    """Update PULSE strategy config at runtime."""
+    body = await request.json()
+
+    if not _pulse:
+        return JSONResponse({"error": "PULSE not initialized"}, status_code=500)
+
+    if "max_bet_cap" in body:
+        val = body["max_bet_cap"]
+        if val is None or val == "" or val == 0:
+            _pulse.max_bet_cap = 50.0  # reset to default
+        else:
+            _pulse.max_bet_cap = max(1, min(500, float(val)))
+
+    return JSONResponse({
+        "ok": True,
+        "pulse_config": {
+            "max_bet_cap": _pulse.max_bet_cap,
+        }
+    })
+
+
+@app.get("/api/pulse/export")
+async def api_pulse_export(format: str = "csv"):
+    """Export PULSE bets as CSV or JSON."""
+    if not _pulse:
+        return JSONResponse({"error": "PULSE not initialized"}, status_code=500)
+
+    bets = [b.to_dict() for b in _pulse.bets if b.outcome != "skip"]
+
+    if format == "json":
+        return Response(
+            json.dumps(bets, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=pulse_bets.json"},
+        )
+
+    fields = ["time", "slug", "direction", "btc_price", "target_price",
+              "entry_price", "distance", "effective_wr", "edge_pct",
+              "stake", "outcome", "pnl"]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(bets)
+    return Response(
+        buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=pulse_bets.csv"},
+    )
 
 
 # --- Investor Endpoints ---
@@ -803,47 +501,6 @@ async def api_investor_withdraw(index: int, request: Request):
         return JSONResponse({"error": "Invalid withdrawal"}, status_code=400)
     state.save_follow_state()
     return JSONResponse({"ok": True, "withdrawal": result})
-
-
-# --- Signal Endpoints ---
-
-@app.get("/api/signal")
-async def api_signal():
-    """Signal module state."""
-    if _signal:
-        return JSONResponse(_signal.get_snapshot())
-    return JSONResponse({"error": "signal module not initialized"})
-
-
-@app.get("/api/signal/download")
-async def api_signal_download(request: Request):
-    """Download signal history as CSV or JSON."""
-    if not _signal:
-        return JSONResponse({"error": "signal module not initialized"}, status_code=500)
-    fmt = request.query_params.get("format", "csv")
-    signals = list(_signal.signals)
-
-    if fmt == "json":
-        return JSONResponse(signals, headers={
-            "Content-Disposition": "attachment; filename=signal_history.json"
-        })
-
-    if not signals:
-        return Response("No signals", media_type="text/csv")
-    cols = ["time", "slug", "direction", "avg_entry_price", "entry_tier",
-            "outcome", "sim_pnl", "suggested_bet_usd", "bias",
-            "total_usdc", "trade_count", "confidence",
-            "scout_direction", "market_winner"]
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
-    writer.writeheader()
-    for s in signals:
-        writer.writerow(s)
-    return Response(
-        buf.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=signal_history.csv"},
-    )
 
 
 # --- Follow Endpoints ---
@@ -1007,17 +664,10 @@ def main():
     parser.add_argument("--port", type=int, default=3000)
     args = parser.parse_args()
 
-    global _follow_feed, _signal, _executor, _redeemer, _analysis
+    global _follow_feed, _executor, _redeemer, _analysis, _btc_feed, _phase, _pulse
 
     # Restore state from previous run
     state.load_follow_state()
-
-    # --- Signal Module ---
-    signal_agg = SignalAggregator()
-    _signal = signal_agg
-    signal_agg.on_signal = _handle_signal
-    # Set signal capital from state
-    signal_agg.sim_capital = state.betting_capital
 
     # --- Analysis Logger (Bonereaper strategy research) ---
     analysis = AnalysisLogger()
@@ -1035,8 +685,6 @@ def main():
     _follow_feed = follow_feed
 
     def _on_rtds_trade(trade):
-        handle_follow_trade(trade)
-        signal_agg.ingest(trade)
         if _analysis:
             _analysis.log_trade(trade)
 
@@ -1083,13 +731,38 @@ def main():
     else:
         print("  Mode: SIMULATION (set POLY_* env vars for live)")
 
+    # --- Binance Futures WebSocket (BTC real-time price) ---
+    btc_feed = BinancePriceFeed(use_futures=True)
+    _btc_feed = btc_feed
+    btc_feed.start()
+    print("[BTC] Binance Futures WebSocket starting...")
+
+    # --- Phase Strategy (Bonereaper replication) ---
+    phase = PhaseStrategy(btc_feed, executor, state)
+    _phase = phase
+    phase.paper_mode = state.sim_mode or not executor.enabled
+    phase.start()
+    phase_mode = "PAPER" if phase.paper_mode else "LIVE"
+    print(f"[PHASE] Phase Strategy started ({phase_mode} mode)")
+    print(f"[PHASE] Max budget: ${phase.max_budget}/window")
+    if state.max_bet_per_window:
+        print(f"[PHASE] Dashboard cap: ${state.max_bet_per_window}/window")
+
+    # --- PULSE Strategy (momentum paper trading) ---
+    pulse = PulseStrategy(btc_feed, executor)
+    _pulse = pulse
+    pulse.paper_mode = True  # Always paper until validated
+    pulse.start()
+    print(f"[PULSE] PULSE Strategy started (PAPER mode)")
+
     print(f"\n  BLACK DELTA")
-    print(f"  Capital: ${state.betting_capital:.2f} | Risk: {state.risk_level}/10 | "
-          f"Kelly: {state.kelly_fraction:.1%}")
+    print(f"  Capital: ${state.betting_capital:.2f}")
     if state.betting_capital_fixed:
         print(f"  Loss limit: ${state.betting_capital_fixed:.0f} "
               f"(auto-pause at ${state._peak_capital - state.betting_capital_fixed:.0f})")
-    print(f"  Strategy: Signal 100%")
+    max_bet_str = f"${state.max_bet_per_window:.0f}" if state.max_bet_per_window else f"${phase.max_budget:.0f} (default)"
+    print(f"  Strategy: Phase ({phase_mode}) | Max bet: {max_bet_str}")
+    print(f"  BTC Feed: Binance Futures bookTicker")
     print(f"  Wallets: {len(follow_feed.wallets)}")
     print(f"  http://localhost:{args.port}\n")
 
@@ -1098,6 +771,15 @@ def main():
     finally:
         print("[STATE] Saving state on shutdown...")
         state.save_follow_state()
+        if _phase:
+            print("[PHASE] Stopping phase strategy...")
+            _phase.stop()
+        if _follow_feed:
+            print("[FEED] Stopping follow feed...")
+            _follow_feed.stop()
+        if _btc_feed:
+            print("[BTC] Stopping Binance feed...")
+            _btc_feed.stop()
         if _analysis:
             print("[ANALYSIS] Flushing active windows on shutdown...")
             _analysis.flush_active_windows()

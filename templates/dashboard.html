@@ -426,12 +426,13 @@ body {
   <div class="header">
     <div class="header-title">Black <span class="delta">Delta</span></div>
     <div class="status-dots">
+      <span id="trading-mode-badge" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;margin-right:8px;letter-spacing:0.5px">--</span>
       <div class="dot" id="dot-rtds"></div> RTDS
       <div class="dot" id="dot-clob" style="margin-left:8px"></div> CLOB
     </div>
     <div class="mode-toggle" id="mode-toggle">
-      <button class="mode-btn loading" id="btn-active"  onclick="setMode('active')"  disabled>Active</button>
-      <button class="mode-btn loading" id="btn-sim"     onclick="setMode('sim')"     disabled>Sim</button>
+      <button class="mode-btn loading" id="btn-active"  onclick="setMode('active')"  disabled>Real</button>
+      <button class="mode-btn loading" id="btn-sim"     onclick="setMode('sim')"     disabled>Paper</button>
       <button class="mode-btn loading" id="btn-paused"  onclick="setMode('paused')"  disabled>Paused</button>
     </div>
   </div>
@@ -449,14 +450,14 @@ body {
       <div class="card-sub" id="profit-sub">All time</div>
     </div>
     <div class="card">
-      <div class="card-label">Full Tier</div>
-      <div class="card-value" id="wr-full">--</div>
-      <div class="card-sub" id="wr-full-sub">0W / 0 · $0</div>
+      <div class="card-label">Win Rate</div>
+      <div class="card-value" id="win-rate">--</div>
+      <div class="card-sub" id="win-rate-sub">0W / 0 bets</div>
     </div>
     <div class="card">
-      <div class="card-label">Half Tier</div>
-      <div class="card-value" id="wr-half">--</div>
-      <div class="card-sub" id="wr-half-sub">0W / 0 · $0</div>
+      <div class="card-label">Avg ROI/Bet</div>
+      <div class="card-value" id="avg-roi">--</div>
+      <div class="card-sub" id="avg-roi-sub">$0 avg P&L</div>
     </div>
     <div class="card">
       <div class="card-label">Open</div>
@@ -464,21 +465,43 @@ body {
       <div class="card-sub" id="pause-reason" style="color:var(--red)"></div>
     </div>
   </div>
+  <div class="capital-grid" style="margin-top:var(--spacing-sm)">
+    <div class="card">
+      <div class="card-label">Total Latency</div>
+      <div class="card-value" id="lat-total" style="font-size:18px">--</div>
+      <div class="card-sub" id="lat-total-sub">feed + proc + clob</div>
+    </div>
+    <div class="card">
+      <div class="card-label">BTC Feed</div>
+      <div class="card-value" id="lat-btc" style="font-size:18px">--</div>
+      <div class="card-sub" id="lat-btc-sub">min -- · max --</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Processing</div>
+      <div class="card-value" id="lat-proc" style="font-size:18px">--</div>
+      <div class="card-sub" id="lat-proc-sub">min -- · max --</div>
+    </div>
+    <div class="card">
+      <div class="card-label">CLOB</div>
+      <div class="card-value" id="lat-clob" style="font-size:18px">--</div>
+      <div class="card-sub" id="lat-clob-sub">min -- · max --</div>
+    </div>
+  </div>
 
   <!-- Controls -->
   <div class="controls">
-    <div class="control-group">
-      <div class="control-label">Risk Level</div>
-      <div class="ctrl-input-row">
-        <input type="number" class="ctrl-input" id="risk-input" min="1" max="10" value="5" onchange="onRiskChange(this.value)">
-        <span class="ctrl-unit">/ 10 &nbsp;<span id="risk-label" style="color:var(--text-dim);font-size:10px">(Optimal)</span></span>
-      </div>
-    </div>
     <div class="control-group">
       <div class="control-label">Betting Capital</div>
       <div class="ctrl-input-row">
         <input type="number" class="ctrl-input" id="capital-input" min="0" step="50" placeholder="auto" onchange="onCapitalChange(this.value)">
         <span class="ctrl-unit">$ <span id="capital-mode" style="color:var(--text-dim);font-size:10px"></span></span>
+      </div>
+    </div>
+    <div class="control-group">
+      <div class="control-label">Max Bet / Window</div>
+      <div class="ctrl-input-row">
+        <input type="number" class="ctrl-input" id="maxbet-input" min="5" max="500" step="5" placeholder="100" onchange="onMaxBetChange(this.value)">
+        <span class="ctrl-unit">$</span>
       </div>
     </div>
   </div>
@@ -490,10 +513,10 @@ body {
       <div class="chart-title">Performance</div>
       <div class="chart-value" id="chart-value">+0.00%</div>
       <div class="time-filters" id="time-filters">
-        <button onclick="setRange('today')">Today</button>
-        <button onclick="setRange('week')">Week</button>
-        <button onclick="setRange('month')">Month</button>
-        <button onclick="setRange('all')" class="active">All</button>
+        <button onclick="setRange('today',this)">Today</button>
+        <button onclick="setRange('week',this)">Week</button>
+        <button onclick="setRange('month',this)">Month</button>
+        <button onclick="setRange('all',this)" class="active">All</button>
       </div>
     </div>
     <div class="chart-container">
@@ -504,6 +527,7 @@ body {
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('trades')">Bets</button>
+    <button class="tab-btn" onclick="switchTab('pulse')">Pulse</button>
     <button class="tab-btn" onclick="switchTab('analysis')">Analysis</button>
     <button class="tab-btn" onclick="switchTab('logs')">Logs</button>
     <button class="tab-btn" onclick="switchTab('investors')">Investors</button>
@@ -511,6 +535,19 @@ body {
 
   <!-- Tab: Bets -->
   <div class="tab-content active" id="tab-trades">
+    <div id="btc-window-bar" style="display:flex;align-items:center;gap:16px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:var(--spacing-sm);font-family:var(--mono)">
+      <div style="display:flex;align-items:baseline;gap:6px">
+        <span style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px">BTC</span>
+        <span id="btc-bar-price" style="font-size:20px;font-weight:700;color:var(--orange)">--</span>
+      </div>
+      <div id="btc-bar-move" style="font-size:14px;font-weight:600">--</div>
+      <div style="flex:1"></div>
+      <div style="display:flex;align-items:center;gap:12px;font-size:11px;color:var(--text-dim)">
+        <span>Window <strong id="btc-bar-window" style="color:var(--text)">--</strong></span>
+        <span>Phase <strong id="btc-bar-phase" style="color:var(--text)">--</strong></span>
+        <span id="btc-bar-countdown" style="color:var(--text)">--</span>
+      </div>
+    </div>
     <div class="card-label" style="margin-bottom:var(--spacing-sm)">Open Positions</div>
     <div class="positions-grid" id="positions-grid"></div>
     <div id="no-positions" style="text-align:center;color:var(--text-dim);padding:20px;font-size:12px">No open positions</div>
@@ -525,7 +562,7 @@ body {
     <div class="table-scroll">
       <table class="data-table" id="trades-table">
         <thead><tr>
-          <th>Time</th><th>Market</th><th>Direction</th><th>Entry $</th><th>Tier</th><th>Outcome</th><th>P&L</th><th>Bet Size</th><th>Bias</th><th>Volume</th><th>Trades</th>
+          <th>Time</th><th>Market</th><th>Direction</th><th>Result</th><th>Winner</th><th>P&L</th><th>ROI</th><th>Spent</th><th>Orders</th><th>BTC Move</th>
         </tr></thead>
         <tbody id="trades-body"></tbody>
       </table>
@@ -637,6 +674,79 @@ body {
     </div>
   </div>
 
+  <!-- Tab: Pulse (Momentum Paper Trading) -->
+  <div class="tab-content" id="tab-pulse">
+    <!-- Status bar -->
+    <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:var(--spacing-md)">
+      <span id="pulse-status-badge" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:var(--orange);color:#000;letter-spacing:0.5px">PAPER</span>
+      <span style="font-size:11px;color:var(--text-dim)">PULSE Momentum Strategy</span>
+      <span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-dim)">
+        Filters: <strong style="color:var(--text)" id="pulse-filters">$0.50–$0.70 · min $3</strong>
+      </span>
+    </div>
+
+    <!-- KPI Grid -->
+    <div class="capital-grid">
+      <div class="card">
+        <div class="card-label">Win Rate</div>
+        <div class="card-value" id="pulse-wr" style="color:var(--text)">--</div>
+        <div class="card-sub" id="pulse-wr-sub">0W / 0 bets</div>
+      </div>
+      <div class="card">
+        <div class="card-label">ROI</div>
+        <div class="card-value" id="pulse-roi" style="color:var(--text)">--</div>
+        <div class="card-sub" id="pulse-roi-sub">$0 avg P&L</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Bets</div>
+        <div class="card-value" id="pulse-bets">0</div>
+        <div class="card-sub" id="pulse-bets-sub">0 skipped</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Profit (Paper)</div>
+        <div class="card-value" id="pulse-profit" style="color:var(--text)">$0.00</div>
+        <div class="card-sub" id="pulse-profit-sub">Capital: $1,000</div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls" style="margin-bottom:var(--spacing-md)">
+      <div class="control-group">
+        <div class="control-label">Max Bet Cap</div>
+        <div class="ctrl-input-row">
+          <input type="number" class="ctrl-input" id="pulse-maxbet-input" min="1" max="500" step="5" placeholder="50" onchange="onPulseMaxBetChange(this.value)">
+          <span class="ctrl-unit">$</span>
+        </div>
+      </div>
+    </div>
+    <div id="pulse-config-toast" style="font-size:11px;color:var(--green);margin:-8px 0 var(--spacing-md) 0;height:16px;opacity:0;transition:opacity 0.3s"></div>
+
+    <!-- Current Window -->
+    <div class="card-label" style="margin-bottom:var(--spacing-sm)">Current Window</div>
+    <div id="pulse-current-window" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:var(--spacing-md)">
+      <div id="pulse-window-content" style="text-align:center;color:var(--text-dim);font-size:12px">Waiting for next window...</div>
+    </div>
+
+    <!-- Bet History -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:var(--spacing-sm)">
+      <div class="card-label" style="margin:0">Bet History</div>
+      <span id="pulse-today-stats" style="font-size:11px;color:var(--text-dim)"></span>
+      <span style="margin-left:auto;display:flex;gap:6px">
+        <a href="/api/pulse/export?format=csv" download style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim);text-decoration:none">CSV</a>
+        <a href="/api/pulse/export?format=json" download style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim);text-decoration:none">JSON</a>
+      </span>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table" id="pulse-table">
+        <thead><tr>
+          <th>Time</th><th>Direction</th><th>Entry</th><th>Distance</th><th>WR</th><th>Edge</th><th>Stake</th><th>Result</th><th>P&L</th>
+        </tr></thead>
+        <tbody id="pulse-body"></tbody>
+      </table>
+    </div>
+    <div id="pulse-no-bets" style="text-align:center;color:var(--text-dim);padding:30px;font-size:12px">No PULSE bets yet — waiting for data...</div>
+  </div>
+
 </div>
 
 <script>
@@ -685,39 +795,104 @@ function render(d) {
   profitEl.style.color = rangeProfit >= 0 ? 'var(--green)' : 'var(--red)';
   setText('profit-sub', rangeLabels[chartRange] || 'All time');
 
-  // Performance by tier (Full / Half) — Win Rate + P&L
-  const allBets = ((d.follow || {}).trades || []).filter(t => t.outcome !== 'pending' && t.bet_placed);
-  const filtBets = cutoff ? allBets.filter(t => t.time && new Date(t.time).getTime() >= cutoff) : allBets;
-  const tierStats = { full: {w:0,t:0,pnl:0}, half: {w:0,t:0,pnl:0} };
-  for (const t of filtBets) {
-    const tier = (t.entry_tier || '').toLowerCase().includes('half') ? 'half' : 'full';
-    tierStats[tier].t++;
-    tierStats[tier].pnl += t.pnl_usd || 0;
-    if (t.outcome === 'win' || (t.outcome === 'closed' && (t.pnl_usd||0) >= 0)) tierStats[tier].w++;
+  // Win Rate + Avg ROI/Bet (from Phase strategy resolved windows)
+  const allPhaseWindows = (d.phase || {}).recent_windows || [];
+  const resolvedWindows = allPhaseWindows.filter(w => w.outcome && w.pnl != null);
+  const filtWindows = cutoff
+    ? resolvedWindows.filter(w => (w.window_start || 0) * 1000 >= cutoff)
+    : resolvedWindows;
+  const totalBets = filtWindows.length;
+  const wins = filtWindows.filter(w => w.pnl >= 0).length;
+  const wr = totalBets > 0 ? Math.round(wins / totalBets * 100) : 0;
+  const wrEl = document.getElementById('win-rate');
+  if (wrEl) {
+    wrEl.textContent = totalBets > 0 ? wr + '%' : '--';
+    wrEl.style.color = totalBets > 0 ? (wr >= 50 ? 'var(--green)' : 'var(--red)') : 'var(--text)';
   }
-  for (const [key, s] of Object.entries(tierStats)) {
-    const el = document.getElementById(`wr-${key}`);
-    const wr = s.t > 0 ? Math.round(s.w / s.t * 100) : 0;
-    if (el) {
-      el.textContent = s.t > 0 ? wr + '%' : '--';
-      el.style.color = s.t > 0 ? (wr >= 50 ? 'var(--green)' : 'var(--red)') : 'var(--text)';
-    }
-    const pnlStr = s.pnl >= 0 ? '+$' + fmt(s.pnl) : '-$' + fmt(Math.abs(s.pnl));
-    const pnlColor = s.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-    const subEl = document.getElementById(`wr-${key}-sub`);
-    if (subEl) subEl.innerHTML = `${s.w}W / ${s.t} · <span style="color:${pnlColor}">${pnlStr}</span>`;
+  setText('win-rate-sub', `${wins}W / ${totalBets} bets`);
+
+  const totalPnl = filtWindows.reduce((s, w) => s + (w.pnl || 0), 0);
+  const totalSpent = filtWindows.reduce((s, w) => s + (w.budget_spent || 0), 0);
+  const avgRoiPct = totalSpent > 0 ? (totalPnl / totalSpent * 100) : 0;
+  const avgPnlPerBet = totalBets > 0 ? totalPnl / totalBets : 0;
+  const roiEl = document.getElementById('avg-roi');
+  if (roiEl) {
+    roiEl.textContent = totalBets > 0 ? (avgRoiPct >= 0 ? '+' : '') + avgRoiPct.toFixed(1) + '%' : '--';
+    roiEl.style.color = totalBets > 0 ? (avgRoiPct >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--text)';
   }
+  const avgPnlStr = avgPnlPerBet >= 0 ? '+$' + fmt(avgPnlPerBet) : '-$' + fmt(Math.abs(avgPnlPerBet));
+  setText('avg-roi-sub', totalBets > 0 ? `${avgPnlStr} avg P&L` : '$0 avg P&L');
 
   // Open positions count
   const pendingCount = (d.open_positions || []).length;
   setText('pending-count', pendingCount);
 
+  // BTC + Window bar (in Bets tab)
+  const btcFd = d.btc_feed || {};
+  const btcPrice = btcFd.btc_price || 0;
+  const btcMoveVal = btcFd.btc_move || 0;
+  setText('btc-bar-price', btcPrice > 0 ? '$' + btcPrice.toLocaleString('en-US', {maximumFractionDigits:0}) : '--');
+  const moveEl = document.getElementById('btc-bar-move');
+  if (moveEl && btcPrice > 0) {
+    const moveStr = (btcMoveVal >= 0 ? '+' : '') + btcMoveVal.toFixed(1);
+    moveEl.textContent = moveStr;
+    moveEl.style.color = btcMoveVal >= 0 ? 'var(--green)' : 'var(--red)';
+  }
+  // Active window info
+  const activeWins = Object.values((d.phase || {}).active_windows || {});
+  if (activeWins.length > 0) {
+    const aw = activeWins[0];
+    const slugShort = (aw.slug || '').split('-').slice(0,3).join('-').toUpperCase();
+    setText('btc-bar-window', slugShort);
+    setText('btc-bar-phase', aw.current_phase != null ? 'P' + (aw.current_phase + 1) : '--');
+    const rem = Math.round(aw.remaining || 0);
+    const rm = Math.floor(rem / 60);
+    const rs = String(rem % 60).padStart(2, '0');
+    setText('btc-bar-countdown', rm + ':' + rs);
+  } else {
+    setText('btc-bar-window', 'waiting');
+    setText('btc-bar-phase', '--');
+    setText('btc-bar-countdown', '--:--');
+  }
+
+  // Latency KPIs
+  function renderLat(id, stats, thresholds) {
+    const el = document.getElementById(id);
+    const sub = document.getElementById(id + '-sub');
+    if (!el || !stats) return;
+    const avg = stats.avg || 0;
+    const mn = stats.min || 0;
+    const mx = stats.max || 0;
+    if (avg > 0) {
+      el.textContent = Math.round(avg) + 'ms';
+      el.style.color = avg < thresholds[0] ? 'var(--green)' : avg < thresholds[1] ? 'var(--orange)' : 'var(--red)';
+      if (sub) sub.textContent = `min ${Math.round(mn)}ms · max ${Math.round(mx)}ms`;
+    } else {
+      el.textContent = '--';
+      el.style.color = 'var(--text)';
+      if (sub) sub.textContent = 'min -- · max --';
+    }
+  }
+  const btcLat = d.btc_feed || {};
+  const btcStats = { avg: btcLat.latency_avg_ms || 0, min: btcLat.latency_min_ms || 0, max: btcLat.latency_max_ms || 0 };
+  renderLat('lat-btc', btcStats, [80, 200]);
+  const phaseLat = d.phase || {};
+  const procStats = phaseLat.latency_processing || { avg:0, min:0, max:0 };
+  const clobStats = phaseLat.latency_clob || { avg:0, min:0, max:0 };
+  renderLat('lat-proc', procStats, [5, 50]);
+  renderLat('lat-clob', clobStats, [300, 800]);
+
+  // Total latency = sum of all three averages
+  const totalAvg = btcStats.avg + (procStats.avg || 0) + (clobStats.avg || 0);
+  const totalMin = btcStats.min + (procStats.min || 0) + (clobStats.min || 0);
+  const totalMax = btcStats.max + (procStats.max || 0) + (clobStats.max || 0);
+  renderLat('lat-total', { avg: totalAvg, min: totalMin, max: totalMax }, [200, 500]);
+
   // Config sync (don't override while user is focused)
   const cfg = d.config;
-  syncInput('risk-input', cfg.risk_level);
   // Betting capital: show fixed value or "auto" placeholder
   const capInput = document.getElementById('capital-input');
-  if (capInput && document.activeElement !== capInput) {
+  if (capInput && document.activeElement !== capInput && !_configGuardActive()) {
     if (cfg.betting_capital_fixed != null) {
       capInput.value = Math.round(cfg.betting_capital_fixed);
       capInput.placeholder = 'auto';
@@ -729,7 +904,16 @@ function render(d) {
   const capMode = d.capital?.capital_mode === 'fixed' ? 'fixed' : `live $${fmt(d.capital?.betting || 0)}`;
   setText('capital-mode', capMode);
 
-  updateRiskLabel(cfg.risk_level);
+  // Max bet per window sync
+  const maxBetInput = document.getElementById('maxbet-input');
+  if (maxBetInput && document.activeElement !== maxBetInput && !_configGuardActive()) {
+    if (cfg.max_bet_per_window != null) {
+      maxBetInput.value = Math.round(cfg.max_bet_per_window);
+    } else {
+      maxBetInput.value = '';
+      maxBetInput.placeholder = '100';
+    }
+  }
 
   // Pause reason (auto-pause info)
   const pauseEl = document.getElementById('pause-reason');
@@ -744,20 +928,42 @@ function render(d) {
   document.getElementById('dot-rtds').className = 'dot' + (d.connections.rtds ? ' on' : '');
   document.getElementById('dot-clob').className = 'dot' + (d.connections.clob ? ' on' : '');
 
-  // Open positions
-  renderPositions(d.open_positions || []);
+  // Trading mode badge
+  const badge = document.getElementById('trading-mode-badge');
+  if (badge) {
+    const phaseRunning = (d.phase || {}).running;
+    const paperMode = (d.phase || {}).paper_mode;
+    if (cfg.kill_switch) {
+      badge.textContent = 'PAUSED';
+      badge.style.background = 'var(--red)'; badge.style.color = '#fff';
+    } else if (paperMode) {
+      badge.textContent = 'PAPER';
+      badge.style.background = 'var(--orange)'; badge.style.color = '#000';
+    } else {
+      badge.textContent = 'LIVE';
+      badge.style.background = 'var(--green)'; badge.style.color = '#000';
+    }
+  }
+
+  // Open positions (from Phase strategy active windows)
+  const phaseActive = Object.values((d.phase || {}).active_windows || {});
+  renderPositions(phaseActive);
 
   // Chart
   renderChart(d);
 
-  // Trade history
-  renderTrades(d.follow);
+  // Trade history (from Phase strategy completed windows)
+  const phaseCompleted = (d.phase || {}).recent_windows || [];
+  renderTrades(phaseCompleted);
 
   // Investors tab
   renderInvestors(d.investors);
 
   // Analysis tab (Bonereaper trade research)
   renderAnalysis(d);
+
+  // PULSE tab (momentum paper trading)
+  renderPulse(d);
 }
 
 // ============================================================
@@ -769,12 +975,10 @@ function syncInput(id, val) {
   const el = document.getElementById(id);
   if (el && document.activeElement !== el) el.value = val;
 }
-function updateRiskLabel(v) {
-  const labels = {1:'Very Safe',2:'Safe',3:'Cautious',4:'Moderate',5:'Optimal',6:'Growth',7:'Aggressive',8:'High Risk',9:'Very High',10:'Max Risk'};
-  setText('risk-label', `(${labels[+v] || ''})`);
-}
-
 let configTimer = null;
+let _configSentAt = 0;  // timestamp of last config PATCH — suppress poll overwrites for 3s
+const CONFIG_GUARD_MS = 3000;
+function _configGuardActive() { return Date.now() - _configSentAt < CONFIG_GUARD_MS; }
 function showToast(msg, ok) {
   const t = document.getElementById('config-toast');
   t.textContent = msg;
@@ -784,6 +988,7 @@ function showToast(msg, ok) {
 }
 function sendConfig(patch) {
   clearTimeout(configTimer);
+  _configSentAt = Date.now();
   configTimer = setTimeout(() => {
     fetch('/api/config', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) })
       .then(r => r.json())
@@ -791,16 +996,9 @@ function sendConfig(patch) {
       .catch(() => showToast('Failed', false));
   }, 400);
 }
-function onRiskChange(v) {
-  v = Math.max(1, Math.min(10, +v));
-  document.getElementById('risk-input').value = v;
-  updateRiskLabel(v);
-  sendConfig({ risk_level: v });
-}
 function onCapitalChange(v) {
   const input = document.getElementById('capital-input');
   if (!v || v === '' || v === '0') {
-    // Empty or 0 = auto mode (use live balance)
     input.value = '';
     input.placeholder = 'auto';
     sendConfig({ betting_capital_fixed: null });
@@ -808,6 +1006,18 @@ function onCapitalChange(v) {
     v = Math.max(10, +v);
     input.value = v;
     sendConfig({ betting_capital_fixed: v });
+  }
+}
+function onMaxBetChange(v) {
+  const input = document.getElementById('maxbet-input');
+  if (!v || v === '' || v === '0') {
+    input.value = '';
+    input.placeholder = '100';
+    sendConfig({ max_bet_per_window: null });
+  } else {
+    v = Math.max(5, Math.min(500, +v));
+    input.value = v;
+    sendConfig({ max_bet_per_window: v });
   }
 }
 function updateModeBtn(kill_switch, sim_mode) {
@@ -838,68 +1048,61 @@ function setMode(mode) {
 // ============================================================
 //  Open Positions
 // ============================================================
-function renderPositions(positions) {
+function renderPositions(windows) {
   const grid = document.getElementById('positions-grid');
   const none = document.getElementById('no-positions');
-  if (!positions.length) {
+  if (!windows.length) {
     grid.innerHTML = '';
     none.style.display = 'block';
     return;
   }
   none.style.display = 'none';
-  grid.innerHTML = positions.slice(0, 12).map(p => {
-    const expired = p.countdown_s <= 0;
-    const dir = (p.direction || '').toUpperCase();
+  grid.innerHTML = windows.slice(0, 6).map(w => {
+    const dir = (w.net_direction || '').toUpperCase();
     const dirClass = dir === 'UP' ? 'up' : 'down';
-
-    // Badge
-    let badge;
-    if (expired) {
-      badge = '<span class="pos-badge validating">VALIDATING</span>';
-    } else {
-      badge = `<span class="pos-badge bet">${dir} BET</span>`;
-    }
-
-    // Progress bar (elapsed / total window)
-    const totalWindow = (p.elapsed_s || 0) + (p.countdown_s || 0);
-    const pct = totalWindow > 0 ? Math.min(100, Math.round((p.elapsed_s || 0) / totalWindow * 100)) : 0;
+    const elapsed = Math.round(w.elapsed || 0);
+    const remaining = Math.round(w.remaining || 0);
+    const totalWindow = elapsed + remaining;
+    const pct = totalWindow > 0 ? Math.min(100, Math.round(elapsed / totalWindow * 100)) : 0;
     const barColor = dir === 'UP' ? 'var(--green)' : 'var(--red)';
 
-    // Countdown
-    const mm = Math.floor(p.countdown_s / 60);
-    const ss = String(p.countdown_s % 60).padStart(2, '0');
-    const elapsed_mm = Math.floor((p.elapsed_s || 0) / 60);
-    const elapsed_ss = String((p.elapsed_s || 0) % 60).padStart(2, '0');
+    const mm = Math.floor(remaining / 60);
+    const ss = String(remaining % 60).padStart(2, '0');
+    const el_mm = Math.floor(elapsed / 60);
+    const el_ss = String(elapsed % 60).padStart(2, '0');
 
-    // Slug display
-    const slug = (p.slug || '').split('-').slice(0, 2).join(' ').toUpperCase();
-    const slugFull = p.slug || '';
+    const slug = (w.slug || '').split('-').slice(0, 2).join(' ').toUpperCase();
+    const slugDetail = (w.slug || '').split('-').slice(2).join('-');
+    const bias = w.buy_bias != null ? Math.round(w.buy_bias * 100) + '%' : '--';
+    const phase = w.current_phase != null ? 'P' + (w.current_phase + 1) : '--';
+    const spent = w.budget_spent != null ? '$' + Number(w.budget_spent).toFixed(0) : '--';
+    const budget = w.max_budget != null ? '$' + Number(w.max_budget).toFixed(0) : '--';
+    const orders = w.order_count || 0;
+    const btcMove = w.last_btc_move != null ? (w.last_btc_move >= 0 ? '+' : '') + Number(w.last_btc_move).toFixed(1) : '--';
+    const borderClass = dir === 'UP' ? 'win-border' : dir === 'DOWN' ? 'lose-border' : 'pending-border';
 
-    // Stats
-    const bias = p.bias != null ? Math.round(p.bias * 100) + '%' : '--';
-    const wr = p.win_rate != null ? Math.round(p.win_rate * 100) + '%' : '--';
-    const tier = p.entry_tier || '--';
-    const payout = p.payout_multiplier ? p.payout_multiplier.toFixed(1) + 'x' : '--';
-
-    const borderClass = expired ? 'pending-border' : (dir === 'UP' ? 'win-border' : 'lose-border');
+    // Estimated P&L: if resolved NOW in current direction, winning shares pay $1
+    const winShares = dir === 'UP' ? (w.up_shares || 0) : (w.down_shares || 0);
+    const estPnl = winShares - (w.budget_spent || 0);
+    const estStr = (estPnl >= 0 ? '+$' : '-$') + Math.abs(estPnl).toFixed(2);
+    const estColor = estPnl >= 0 ? 'var(--green)' : 'var(--red)';
 
     return `<div class="pos-card ${borderClass}">
       <div class="pos-header">
-        <span class="pos-slug">${slug} &nbsp;<span style="color:var(--text-dim);font-weight:400;font-size:10px">${slugFull.split('-').slice(2).join('-')}</span></span>
-        ${badge}
+        <span class="pos-slug">${slug} &nbsp;<span style="color:var(--text-dim);font-weight:400;font-size:10px">${slugDetail}</span></span>
+        <span class="pos-badge bet">${phase}</span>
       </div>
-      <div class="pos-dir-big ${dirClass}">${dir} &nbsp;<span style="font-size:14px;color:var(--text-dim);font-weight:400">${bias}</span></div>
+      <div class="pos-dir-big ${dirClass}">${dir || 'NEUTRAL'} &nbsp;<span style="font-size:14px;color:var(--text-dim);font-weight:400">${bias}</span> &nbsp;<span style="font-size:16px;font-weight:700;color:${estColor}">${estStr}</span></div>
       <div class="pos-progress"><div class="pos-progress-bar" style="width:${pct}%;background:${barColor}"></div></div>
       <div class="pos-stats">
-        <span>Entry <strong>$${Number(p.fill_price || p.entry_price || 0).toFixed(2)}</strong></span>
-        <span>Stake <strong>$${Number(p.stake || 0).toFixed(2)}</strong></span>
-        <span>Payout <strong>${payout}</strong></span>
-        <span>Tier <strong>${tier}</strong></span>
+        <span>Spent <strong>${spent} / ${budget}</strong></span>
+        <span>Orders <strong>${orders}</strong></span>
+        <span>BTC <strong style="color:${w.last_btc_move >= 0 ? 'var(--green)' : 'var(--red)'}">${btcMove}</strong></span>
       </div>
       <div class="pos-stats" style="margin-top:4px">
-        <span>${elapsed_mm}:${elapsed_ss}s in</span>
-        <span>${expired ? 'Validating...' : mm + ':' + ss + ' left'}</span>
-        <span>WR <strong>${wr}</strong></span>
+        <span>${el_mm}:${el_ss}s in</span>
+        <span>${mm}:${ss} left</span>
+        <span>UP $${Number(w.up_usdc||0).toFixed(0)} / DOWN $${Number(w.down_usdc||0).toFixed(0)}</span>
       </div>
     </div>`;
   }).join('');
@@ -908,6 +1111,110 @@ function renderPositions(positions) {
 // ============================================================
 //  Chart
 // ============================================================
+// Crosshair + tooltip plugin (vertical line on hover with data label)
+const crosshairPlugin = {
+  id: 'crosshair',
+  _hoverIndex: -1,
+  afterEvent(chart, args) {
+    const evt = args.event;
+    if (evt.type === 'mousemove' || evt.type === 'mouseout') {
+      const ds = chart.data.datasets[0];
+      if (!ds || !ds.data.length) { this._hoverIndex = -1; return; }
+      if (evt.type === 'mouseout') { this._hoverIndex = -1; chart.draw(); return; }
+      // Find nearest data point by X pixel
+      const meta = chart.getDatasetMeta(0);
+      let closest = -1, minDist = Infinity;
+      for (let i = 0; i < meta.data.length; i++) {
+        const dx = Math.abs(meta.data[i].x - evt.x);
+        if (dx < minDist) { minDist = dx; closest = i; }
+      }
+      if (closest !== this._hoverIndex) {
+        this._hoverIndex = closest;
+        chart.draw();
+      }
+    }
+  },
+  afterDraw(chart) {
+    const idx = this._hoverIndex;
+    const ds = chart.data.datasets[0];
+    if (idx < 0 || !ds || idx >= ds.data.length) return;
+
+    const meta = chart.getDatasetMeta(0);
+    const point = meta.data[idx];
+    if (!point) return;
+
+    const ctx = chart.ctx;
+    const area = chart.chartArea;
+    const px = point.x;
+    const py = point.y;
+    const dp = ds.data[idx];
+
+    // Vertical crosshair line
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(px, area.top);
+    ctx.lineTo(px, area.bottom);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.setLineDash([4, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Dot on the line
+    ctx.beginPath();
+    ctx.arc(px, py, 4, 0, Math.PI * 2);
+    ctx.fillStyle = '#4ade80';
+    ctx.fill();
+    ctx.strokeStyle = '#0d1117';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Tooltip box
+    const dateStr = new Date(dp.x).toLocaleString('en-US', {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+    const pctStr = (dp.y >= 0 ? '+' : '') + dp.y.toFixed(2) + '%';
+    const baseCap = ((chart.options._baseCap) || 1000);
+    const dollarPnl = dp.y / 100 * baseCap;
+    const dollarStr = (dollarPnl >= 0 ? '+$' : '-$') + Math.abs(dollarPnl).toFixed(2);
+
+    const lines = [dateStr, `${pctStr}  (${dollarStr})`];
+    ctx.font = '600 11px Inter, sans-serif';
+    const lineH = 16;
+    const padX = 10, padY = 6;
+    const maxW = Math.max(...lines.map(l => ctx.measureText(l).width));
+    const boxW = maxW + padX * 2;
+    const boxH = lines.length * lineH + padY * 2;
+
+    // Position: above point, flip if near edge
+    let bx = px - boxW / 2;
+    let by = py - boxH - 12;
+    if (bx < area.left) bx = area.left + 4;
+    if (bx + boxW > area.right) bx = area.right - boxW - 4;
+    if (by < area.top) by = py + 12;
+
+    // Box background
+    ctx.fillStyle = 'rgba(22, 27, 34, 0.95)';
+    ctx.beginPath();
+    ctx.roundRect(bx, by, boxW, boxH, 6);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Text
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.font = '500 10px Inter, sans-serif';
+    ctx.fillText(lines[0], bx + padX, by + padY + 11);
+
+    ctx.fillStyle = dp.y >= 0 ? '#4ade80' : '#f87171';
+    ctx.font = '600 11px Inter, sans-serif';
+    ctx.fillText(lines[1], bx + padX, by + padY + 11 + lineH);
+
+    ctx.restore();
+  }
+};
+
 function initChart() {
   const ctx = document.getElementById('pnl-chart').getContext('2d');
   const mk = (label, color, dash, width) => ({
@@ -922,8 +1229,11 @@ function initChart() {
       mk('Trend', 'rgba(74,222,128,0.35)', [6,4], 1),
       mk('Baseline', 'rgba(255,255,255,0.2)', [6,4], 1),
     ]},
+    plugins: [crosshairPlugin],
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'nearest', axis: 'x', intersect: false },
+      _baseCap: 1000,
       plugins: {
         legend: {
           display: true, position: 'top', align: 'end',
@@ -949,10 +1259,10 @@ function initChart() {
 }
 initChart();
 
-function setRange(r) {
+function setRange(r, el) {
   chartRange = r;
   document.querySelectorAll('.time-filters button').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
+  if (el) el.classList.add('active');
   if (lastData) render(lastData);
 }
 
@@ -989,65 +1299,80 @@ function renderChart(d) {
   const cutoff = getTimeCutoff(chartRange);
   const baseCap = (d.capital || {}).base || 1000;
 
-  // Live line: cumulative P&L from RESOLVED trades (not balance snapshots)
-  const allTrades = ((d.follow || {}).trades || [])
-    .filter(t => t.outcome !== 'pending' && t.time)
-    .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+  // Data source: Phase-Strategy completed windows (resolved with P&L)
+  const phaseWindows = ((d.phase || {}).recent_windows || [])
+    .filter(w => w.pnl != null && w.slug)
+    .sort((a, b) => a.window_start - b.window_start);
 
-  const filteredTrades = cutoff
-    ? allTrades.filter(t => new Date(t.time).getTime() >= cutoff)
-    : allTrades;
+  const filtered = cutoff
+    ? phaseWindows.filter(w => (w.window_start || 0) * 1000 >= cutoff)
+    : phaseWindows;
 
-  // For filtered ranges, start cumPnl from pre-period total so chart is continuous
+  // Cumulative P&L as % of base capital
   let cumPnl = 0;
   if (cutoff) {
-    for (const t of allTrades) {
-      if (new Date(t.time).getTime() < cutoff) cumPnl += t.pnl_usd || 0;
+    for (const w of phaseWindows) {
+      if ((w.window_start || 0) * 1000 < cutoff) cumPnl += w.pnl || 0;
       else break;
     }
   }
-  const livePoints = filteredTrades.map(t => {
-    cumPnl += t.pnl_usd || 0;
-    return { x: new Date(t.time).getTime(), y: cumPnl / baseCap * 100 };
+  const livePoints = filtered.map(w => {
+    cumPnl += w.pnl || 0;
+    return { x: (w.window_start || 0) * 1000, y: cumPnl / baseCap * 100 };
   });
 
   pnlChart.data.datasets[0].data = livePoints;
 
-  // Trend line (linear regression of live points)
+  // Trend line (normalized linear regression to avoid float precision issues)
   if (livePoints.length >= 2) {
     const n = livePoints.length;
+    const x0 = livePoints[0].x;
+    const xScale = (livePoints[n-1].x - x0) || 1;
     let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-    for (const p of livePoints) { sumX += p.x; sumY += p.y; sumXY += p.x * p.y; sumXX += p.x * p.x; }
-    const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
-    const intercept = (sumY - slope * sumX) / n;
-    const x0 = livePoints[0].x, x1 = livePoints[n - 1].x;
-    pnlChart.data.datasets[1].data = [
-      { x: x0, y: slope * x0 + intercept },
-      { x: x1, y: slope * x1 + intercept },
-    ];
+    for (const p of livePoints) {
+      const nx = (p.x - x0) / xScale;  // normalize to 0..1
+      sumX += nx; sumY += p.y; sumXY += nx * p.y; sumXX += nx * nx;
+    }
+    const denom = n * sumXX - sumX * sumX;
+    if (Math.abs(denom) > 1e-10) {
+      const slope = (n * sumXY - sumX * sumY) / denom;
+      const intercept = (sumY - slope * sumX) / n;
+      pnlChart.data.datasets[1].data = [
+        { x: livePoints[0].x, y: intercept },
+        { x: livePoints[n-1].x, y: slope + intercept },
+      ];
+    } else {
+      pnlChart.data.datasets[1].data = [];
+    }
   } else {
     pnlChart.data.datasets[1].data = [];
   }
 
   // Baseline at 0%
-  const allPoints = livePoints;
-  const xs = allPoints.map(p => p.x);
-  if (xs.length >= 2) {
-    pnlChart.data.datasets[2].data = [{ x: Math.min(...xs), y: 0 }, { x: Math.max(...xs), y: 0 }];
+  if (livePoints.length >= 2) {
+    pnlChart.data.datasets[2].data = [
+      { x: livePoints[0].x, y: 0 },
+      { x: livePoints[livePoints.length - 1].x, y: 0 },
+    ];
   }
 
-  // Auto-scale
-  const ys = allPoints.map(p => p.y);
-  if (ys.length) {
-    const mn = Math.min(...ys, 0), mx = Math.max(...ys, 0);
+  // Auto-scale Y axis
+  if (livePoints.length) {
+    let mn = 0, mx = 0;
+    for (const p of livePoints) {
+      if (p.y < mn) mn = p.y;
+      if (p.y > mx) mx = p.y;
+    }
     const pad = Math.max((mx - mn) * 0.25, 1);
     pnlChart.options.scales.y.min = mn - pad;
     pnlChart.options.scales.y.max = mx + pad;
   }
 
+  // Pass baseCap to crosshair plugin for dollar conversion
+  pnlChart.options._baseCap = baseCap;
   pnlChart.update('none');
 
-  // Header value = last live point (total resolved P&L %)
+  // Header value = current cumulative P&L %
   const roi = livePoints.length ? livePoints[livePoints.length - 1].y : 0;
   const valEl = document.getElementById('chart-value');
   valEl.textContent = `${roi >= 0 ? '+' : ''}${roi.toFixed(2)}%`;
@@ -1057,70 +1382,66 @@ function renderChart(d) {
 // ============================================================
 //  Bet History (Bets tab)
 // ============================================================
-function renderTrades(follow) {
-  const trades = (follow || {}).trades || [];
+function renderTrades(windows) {
   const tbody = document.getElementById('trades-body');
   const noEl = document.getElementById('no-trades');
   const moreWrap = document.getElementById('show-more-wrap');
 
-  const bets = trades.filter(t => t.bet_placed);
-  if (!bets.length) { tbody.innerHTML = ''; noEl.style.display = 'block'; moreWrap.style.display = 'none'; return; }
+  // Show only resolved windows (have outcome), newest first
+  const resolved = (windows || []).filter(w => w.outcome).sort((a, b) => (b.window_start || 0) - (a.window_start || 0));
+  if (!resolved.length) { tbody.innerHTML = ''; noEl.style.display = 'block'; moreWrap.style.display = 'none'; return; }
   noEl.style.display = 'none';
-  moreWrap.style.display = bets.length > tradesShown ? '' : 'none';
+  moreWrap.style.display = resolved.length > tradesShown ? '' : 'none';
 
-  tbody.innerHTML = bets.slice(0, tradesShown).map(t => {
-    const time = t.time ? new Date(t.time).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
-    // Market: full slug like "BTC 5m-1775430600"
-    const slugParts = (t.event_slug || t.slug || '').split('-');
+  tbody.innerHTML = resolved.slice(0, tradesShown).map(w => {
+    const ts = w.window_start ? new Date(w.window_start * 1000) : null;
+    const time = ts ? ts.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
+
+    const slugParts = (w.slug || '').split('-');
     const market = slugParts.length >= 3
       ? slugParts[0].toUpperCase() + ' ' + slugParts.slice(1).join('-')
-      : (t.event_slug || t.slug || '');
-    const dir = (t.direction || '').toUpperCase();
+      : (w.slug || '');
+
+    const dir = (w.net_direction || '').toUpperCase();
     const dirColor = dir === 'UP' ? 'var(--green)' : dir === 'DOWN' ? 'var(--red)' : 'var(--text)';
-    const entry = '$' + Number(t.fill_price || t.contract_price || 0).toFixed(2);
-    // Tier colored
-    const tier = (t.entry_tier || '--').toUpperCase();
-    const tierColor = tier === 'FULL' ? 'var(--green)' : tier === 'HALF' ? 'var(--orange)' : 'var(--text-dim)';
-    // Outcome: CORRECT / WRONG / pending
-    const outcome = t.outcome || 'pending';
-    let outcomeLabel, outcomeColor;
-    if (outcome === 'win' || outcome === 'correct' || outcome === 'closed') {
-      outcomeLabel = 'CORRECT'; outcomeColor = 'var(--green)';
-    } else if (outcome === 'lose' || outcome === 'wrong') {
-      outcomeLabel = 'WRONG'; outcomeColor = 'var(--red)';
-    } else {
-      outcomeLabel = 'pending'; outcomeColor = 'var(--text-dim)';
-    }
-    // P&L
-    const pnl = t.pnl_usd || 0;
-    const pnlStr = outcome === 'pending' ? '--' :
-      (pnl >= 0 ? '+$' + Number(pnl).toFixed(2) : '-$' + Number(Math.abs(pnl)).toFixed(2));
-    const pnlColor = outcome === 'pending' ? 'var(--text-dim)' : pnl >= 0 ? 'var(--green)' : 'var(--red)';
-    // Bet size
-    const betSize = t.stake_usd ? '$' + Math.round(t.stake_usd) : '--';
-    // Bias
-    const bias = t.bias != null ? Math.round(t.bias * 100) + '%' : '--';
-    // Volume
-    const vol = t.total_usdc ? '$' + Math.round(t.total_usdc) : '--';
-    // Trades
-    const trades_n = t.trade_count || '--';
+
+    const correct = w.net_direction === w.outcome;
+    const resultLabel = correct ? 'CORRECT' : 'WRONG';
+    const resultColor = correct ? 'var(--green)' : 'var(--red)';
+
+    const winner = (w.outcome || '').toUpperCase();
+    const winnerColor = winner === 'UP' ? 'var(--green)' : winner === 'DOWN' ? 'var(--red)' : 'var(--text-dim)';
+
+    const pnl = w.pnl || 0;
+    const pnlStr = pnl >= 0 ? '+$' + Number(pnl).toFixed(2) : '-$' + Number(Math.abs(pnl)).toFixed(2);
+    const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+    const spent = w.budget_spent || 0;
+    const spentStr = '$' + Number(spent).toFixed(0);
+    const roi = spent > 0 ? (pnl / spent * 100) : 0;
+    const roiStr = (roi >= 0 ? '+' : '') + roi.toFixed(1) + '%';
+    const roiColor = roi >= 0 ? 'var(--green)' : 'var(--red)';
+
+    const orders = w.order_count || '--';
+    const btcMove = w.last_btc_move != null ? (w.last_btc_move >= 0 ? '+' : '') + Number(w.last_btc_move).toFixed(1) : '--';
+    const btcColor = (w.last_btc_move || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+
     return `<tr>
       <td>${time}</td>
       <td>${market}</td>
       <td style="color:${dirColor};font-weight:700">${dir}</td>
-      <td>${entry}</td>
-      <td style="color:${tierColor};font-weight:600">${tier}</td>
-      <td style="color:${outcomeColor};font-weight:700">${outcomeLabel}</td>
+      <td style="color:${resultColor};font-weight:700">${resultLabel}</td>
+      <td style="color:${winnerColor};font-weight:600">${winner}</td>
       <td style="color:${pnlColor}">${pnlStr}</td>
-      <td>${betSize}</td>
-      <td>${bias}</td>
-      <td>${vol}</td>
-      <td>${trades_n}</td>
+      <td style="color:${roiColor}">${roiStr}</td>
+      <td>${spentStr}</td>
+      <td>${orders}</td>
+      <td style="color:${btcColor}">${btcMove}</td>
     </tr>`;
   }).join('');
 }
 
-function showMoreTrades() { tradesShown += 30; if (lastData) renderTrades(lastData.follow); }
+function showMoreTrades() { tradesShown += 30; if (lastData) renderTrades((lastData.phase || {}).recent_windows || []); }
 
 // ============================================================
 //  Investors Tab
@@ -1300,6 +1621,189 @@ setInterval(() => {
   const logsTab = document.getElementById('tab-logs');
   if (logsTab && logsTab.classList.contains('active')) fetchLogs();
 }, 2000);
+
+// ── PULSE Tab Rendering ─────────────────────────────────────
+function renderPulse(d) {
+  const p = d.pulse;
+  if (!p) return;
+
+  // KPIs
+  const total = (p.wins || 0) + (p.losses || 0);
+  const wr = p.win_rate || 0;
+  const wrEl = document.getElementById('pulse-wr');
+  if (wrEl) {
+    wrEl.textContent = total > 0 ? wr + '%' : '--';
+    wrEl.style.color = total > 0 ? (wr >= 55 ? 'var(--green)' : wr >= 50 ? 'var(--orange)' : 'var(--red)') : 'var(--text)';
+  }
+  setText('pulse-wr-sub', `${p.wins || 0}W / ${total} bets`);
+
+  const roiEl = document.getElementById('pulse-roi');
+  if (roiEl) {
+    const roi = p.roi || 0;
+    roiEl.textContent = total > 0 ? (roi >= 0 ? '+' : '') + roi.toFixed(1) + '%' : '--';
+    roiEl.style.color = total > 0 ? (roi >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--text)';
+  }
+  const avgPnl = p.avg_pnl || 0;
+  setText('pulse-roi-sub', total > 0 ? ((avgPnl >= 0 ? '+$' : '-$') + Math.abs(avgPnl).toFixed(2) + ' avg P&L') : '$0 avg P&L');
+
+  setText('pulse-bets', total);
+  setText('pulse-bets-sub', (p.total_skips || 0) + ' skipped');
+
+  const profitEl = document.getElementById('pulse-profit');
+  const pnl = p.total_pnl || 0;
+  if (profitEl) {
+    profitEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+    profitEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+  }
+  setText('pulse-profit-sub', `Capital: $${fmt(p.capital || 1000)}`);
+
+  // Filters display
+  const f = p.filters || {};
+  setText('pulse-filters', `$${(f.entry_min||0.50).toFixed(2)}–$${(f.entry_max||0.70).toFixed(2)} · min $${f.min_distance||3} · slip $${(f.slippage||0.02).toFixed(2)}`);
+
+  // Status badge
+  const badge = document.getElementById('pulse-status-badge');
+  if (badge) {
+    if (!p.running) {
+      badge.textContent = 'STOPPED'; badge.style.background = 'var(--red)'; badge.style.color = '#fff';
+    } else if (p.paper_mode) {
+      badge.textContent = 'PAPER'; badge.style.background = 'var(--orange)'; badge.style.color = '#000';
+    } else {
+      badge.textContent = 'LIVE'; badge.style.background = 'var(--green)'; badge.style.color = '#000';
+    }
+  }
+
+  // Current window
+  const cw = p.current_window;
+  const cwEl = document.getElementById('pulse-window-content');
+  if (cwEl) {
+    if (cw && cw.outcome === 'pending') {
+      const dir = cw.direction || '--';
+      const dirColor = dir === 'UP' ? 'var(--green)' : dir === 'DOWN' ? 'var(--red)' : 'var(--text)';
+      const rem = cw.remaining || 0;
+      const rm = Math.floor(rem / 60);
+      const rs = String(Math.round(rem % 60)).padStart(2, '0');
+      const totalW = 300;
+      const elapsed = totalW - rem;
+      const pct = Math.min(100, Math.round(elapsed / totalW * 100));
+      const barColor = dir === 'UP' ? 'var(--green)' : 'var(--red)';
+
+      cwEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="display:flex;align-items:baseline;gap:10px">
+            <span style="font-size:10px;color:var(--text-dim);text-transform:uppercase">BTC</span>
+            <span style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--orange)">$${Number(cw.btc_price||0).toLocaleString('en-US',{maximumFractionDigits:0})}</span>
+            <span style="font-size:10px;color:var(--text-dim)">Target</span>
+            <span style="font-family:var(--mono);font-size:14px;font-weight:600;color:var(--text)">$${Number(cw.target_price||0).toLocaleString('en-US',{maximumFractionDigits:0})}</span>
+            <span style="font-family:var(--mono);font-size:13px;font-weight:600;color:${dirColor}">Dist ${cw.distance >= 0 ? '+' : ''}$${Number(cw.distance||0).toFixed(1)}</span>
+          </div>
+          <span style="font-family:var(--mono);font-size:14px;font-weight:600;color:var(--text)">${rm}:${rs}</span>
+        </div>
+        <div class="pos-progress" style="margin:8px 0"><div class="pos-progress-bar" style="width:${pct}%;background:${barColor}"></div></div>
+        <div style="display:flex;gap:16px;font-size:11px;color:var(--text-dim);font-family:var(--mono)">
+          <span>Direction <strong style="color:${dirColor}">${dir}</strong></span>
+          <span>Entry <strong style="color:var(--text)">$${Number(cw.entry_price||0).toFixed(2)}</strong></span>
+          <span>Stake <strong style="color:var(--text)">$${Number(cw.stake||0).toFixed(2)}</strong></span>
+          <span>Edge <strong style="color:var(--accent)">${Number(cw.edge_pct||0).toFixed(1)}%</strong></span>
+        </div>`;
+    } else {
+      // No active bet — show Chainlink price while waiting
+      const clPrice = p.chainlink_btc || 0;
+      const clStr = clPrice > 0 ? '$' + clPrice.toLocaleString('en-US', {maximumFractionDigits:2}) : '--';
+      cwEl.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
+        <span style="color:var(--text-dim);font-size:12px">Waiting for next window...</span>
+        <span style="margin-left:auto;font-size:11px;color:var(--text-dim);font-family:var(--mono)">Chainlink BTC <strong style="color:var(--orange)">${clStr}</strong></span>
+      </div>`;
+    }
+  }
+
+  // Bet history table
+  const bets = (p.recent_bets || []).filter(b => b.outcome !== 'skip').reverse();
+  const tbody = document.getElementById('pulse-body');
+  const noEl = document.getElementById('pulse-no-bets');
+  if (!bets.length) {
+    if (tbody) tbody.innerHTML = '';
+    if (noEl) noEl.style.display = 'block';
+    return;
+  }
+  if (noEl) noEl.style.display = 'none';
+
+  if (tbody) {
+    tbody.innerHTML = bets.slice(0, 30).map(b => {
+      const ts = b.window_start ? new Date(b.window_start * 1000) : (b.time ? new Date(b.time) : null);
+      const timeStr = ts ? ts.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
+      const dir = b.direction || '--';
+      const dirColor = dir === 'UP' ? 'var(--green)' : dir === 'DOWN' ? 'var(--red)' : 'var(--text-dim)';
+
+      const entry = b.entry_price > 0 ? '$' + Number(b.entry_price).toFixed(2) : '--';
+      const dist = b.distance > 0 ? '$' + Number(b.distance).toFixed(1) : '--';
+      const effWr = b.effective_wr > 0 ? (b.effective_wr * 100).toFixed(1) + '%' : '--';
+      const edge = b.edge_pct ? Number(b.edge_pct).toFixed(1) + '%' : '--';
+      const stake = b.stake > 0 ? '$' + Number(b.stake).toFixed(2) : '--';
+
+      const outcome = (b.outcome || '').toUpperCase();
+      const outcomeColor = outcome === 'WIN' ? 'var(--green)' : outcome === 'LOSE' ? 'var(--red)' : 'var(--orange)';
+
+      const pnl = b.pnl || 0;
+      const pnlStr = outcome === 'PENDING' ? '--' : (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+      const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+      return `<tr>
+        <td>${timeStr}</td>
+        <td style="color:${dirColor};font-weight:700">${dir}</td>
+        <td>${entry}</td>
+        <td>${dist}</td>
+        <td style="color:var(--accent-bright)">${effWr}</td>
+        <td style="color:var(--accent)">${edge}</td>
+        <td>${stake}</td>
+        <td style="color:${outcomeColor};font-weight:700">${outcome}</td>
+        <td style="color:${pnlColor}">${pnlStr}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Max bet cap input sync
+  const maxBetInput = document.getElementById('pulse-maxbet-input');
+  if (maxBetInput && document.activeElement !== maxBetInput && !_configGuardActive()) {
+    const cap = p.max_bet_cap;
+    if (cap != null) maxBetInput.value = Math.round(cap);
+  }
+
+  // Today stats
+  const dailyPnl = p.daily_pnl || 0;
+  setText('pulse-today-stats', `Today: ${dailyPnl >= 0 ? '+' : ''}$${dailyPnl.toFixed(2)}`);
+}
+
+// PULSE config helpers
+let pulseConfigTimer = null;
+function onPulseMaxBetChange(v) {
+  const input = document.getElementById('pulse-maxbet-input');
+  if (!v || v === '' || v === '0') {
+    input.value = '';
+    input.placeholder = '50';
+    sendPulseConfig({ max_bet_cap: null });
+  } else {
+    v = Math.max(1, Math.min(500, +v));
+    input.value = v;
+    sendPulseConfig({ max_bet_cap: v });
+  }
+}
+function sendPulseConfig(patch) {
+  clearTimeout(pulseConfigTimer);
+  _configSentAt = Date.now();
+  pulseConfigTimer = setTimeout(() => {
+    fetch('/api/pulse/config', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) })
+      .then(r => r.json())
+      .then(() => {
+        const t = document.getElementById('pulse-config-toast');
+        if (t) { t.textContent = 'Applied'; t.style.color = 'var(--green)'; t.style.opacity = '1'; setTimeout(() => { t.style.opacity = '0'; }, 2000); }
+      })
+      .catch(() => {
+        const t = document.getElementById('pulse-config-toast');
+        if (t) { t.textContent = 'Failed'; t.style.color = 'var(--red)'; t.style.opacity = '1'; setTimeout(() => { t.style.opacity = '0'; }, 2000); }
+      });
+  }, 400);
+}
 
 // ── Analysis Tab Rendering ───────────────────────────────────
 function renderAnalysis(data) {
