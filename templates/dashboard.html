@@ -504,6 +504,7 @@ body {
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab-btn active" onclick="switchTab('trades')">Bets</button>
+    <button class="tab-btn" onclick="switchTab('analysis')">Analysis</button>
     <button class="tab-btn" onclick="switchTab('logs')">Logs</button>
     <button class="tab-btn" onclick="switchTab('investors')">Investors</button>
   </div>
@@ -535,6 +536,44 @@ body {
     </div>
   </div>
 
+
+  <!-- Tab: Analysis (Bonereaper Trade Research) -->
+  <div class="tab-content" id="tab-analysis">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:var(--spacing-sm)">
+      <div class="card-label" style="margin:0">Bonereaper Trade Analysis</div>
+      <span id="analysis-stats" style="font-size:11px;color:var(--text-dim)">loading...</span>
+      <span style="margin-left:auto;display:flex;gap:6px">
+        <a href="/api/analysis/export?type=trades&format=csv" download style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim);text-decoration:none">Trades CSV</a>
+        <a href="/api/analysis/export?type=windows&format=csv" download style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim);text-decoration:none">Windows CSV</a>
+        <a href="/api/analysis/export?type=windows&format=json" download style="font-size:10px;padding:3px 8px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim);text-decoration:none">Windows JSON</a>
+      </span>
+    </div>
+
+    <!-- BTC/ETH price indicator -->
+    <div style="display:flex;gap:12px;margin-bottom:var(--spacing-md)">
+      <div class="kpi-card" style="flex:1;padding:10px 14px">
+        <div class="card-label" style="font-size:9px">BTC</div>
+        <div id="analysis-btc" style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--orange)">--</div>
+      </div>
+      <div class="kpi-card" style="flex:1;padding:10px 14px">
+        <div class="card-label" style="font-size:9px">ETH</div>
+        <div id="analysis-eth" style="font-size:18px;font-weight:700;font-family:var(--mono);color:#627eea">--</div>
+      </div>
+      <div class="kpi-card" style="flex:1;padding:10px 14px">
+        <div class="card-label" style="font-size:9px">TRADES LOGGED</div>
+        <div id="analysis-total" style="font-size:18px;font-weight:700;font-family:var(--mono)">0</div>
+      </div>
+      <div class="kpi-card" style="flex:1;padding:10px 14px">
+        <div class="card-label" style="font-size:9px">WINDOWS</div>
+        <div id="analysis-windows" style="font-size:18px;font-weight:700;font-family:var(--mono)">0</div>
+      </div>
+    </div>
+
+    <!-- Active windows -->
+    <div class="card-label" style="margin-bottom:var(--spacing-sm)">Active Windows</div>
+    <div id="analysis-active-windows" class="positions-grid"></div>
+    <div id="no-analysis-windows" style="text-align:center;color:var(--text-dim);padding:20px;font-size:12px">No active windows</div>
+  </div>
 
   <!-- Tab: Logs -->
   <div class="tab-content" id="tab-logs">
@@ -716,6 +755,9 @@ function render(d) {
 
   // Investors tab
   renderInvestors(d.investors);
+
+  // Analysis tab (Bonereaper trade research)
+  renderAnalysis(d);
 }
 
 // ============================================================
@@ -1258,6 +1300,91 @@ setInterval(() => {
   const logsTab = document.getElementById('tab-logs');
   if (logsTab && logsTab.classList.contains('active')) fetchLogs();
 }, 2000);
+
+// ── Analysis Tab Rendering ───────────────────────────────────
+function renderAnalysis(data) {
+  if (!data || !data.analysis) return;
+  const a = data.analysis;
+  setText('analysis-btc', a.btc_price > 0 ? '$' + a.btc_price.toLocaleString('en-US', {maximumFractionDigits:2}) : '--');
+  setText('analysis-eth', a.eth_price > 0 ? '$' + a.eth_price.toLocaleString('en-US', {maximumFractionDigits:2}) : '--');
+  setText('analysis-total', a.total_trades_logged || 0);
+  setText('analysis-windows', a.total_windows_tracked || 0);
+  setText('analysis-stats', `${a.active_windows || 0} active | cache ${a.price_cache_age_s >= 0 ? a.price_cache_age_s.toFixed(0) + 's' : '?'}`);
+
+  const grid = document.getElementById('analysis-active-windows');
+  const noWin = document.getElementById('no-analysis-windows');
+  const windows = a.windows || [];
+
+  if (!grid) return;
+
+  if (windows.length === 0) {
+    grid.innerHTML = '';
+    if (noWin) noWin.style.display = '';
+    return;
+  }
+  if (noWin) noWin.style.display = 'none';
+
+  grid.innerHTML = windows.map(w => {
+    const elapsed = w.last_trade_elapsed_s || 0;
+    const duration = w.window_duration || 300;
+    const pct = Math.min(100, (elapsed / duration) * 100);
+    const dir = (w.net_direction || 'neutral').toUpperCase();
+    const dirColor = dir === 'UP' ? 'var(--green)' : dir === 'DOWN' ? 'var(--red)' : 'var(--text-dim)';
+    const biasPct = w.buy_bias_pct || 0;
+    const btcMove = w.btc_move_usd || 0;
+    const btcDir = btcMove >= 0 ? '+' : '';
+    const btcColor = btcMove >= 0 ? 'var(--green)' : 'var(--red)';
+    const btcPre = w.btc_pre_move_usd || 0;
+    const btcPreDir = btcPre >= 0 ? '+' : '';
+    const btcPreColor = btcPre >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // Avg entry prices
+    const avgUp = w.avg_buy_up_price != null ? '$' + w.avg_buy_up_price.toFixed(2) : '--';
+    const avgDown = w.avg_buy_down_price != null ? '$' + w.avg_buy_down_price.toFixed(2) : '--';
+    const avgDelta = w.avg_trade_delta_s || 0;
+    const minDelta = w.min_trade_delta_s || 0;
+    const mktOutcome = w.market_outcome ? w.market_outcome.toUpperCase() : '--';
+    const mktColor = w.market_outcome === 'up' ? 'var(--green)' : w.market_outcome === 'down' ? 'var(--red)' : 'var(--text-dim)';
+    const correctStr = w.direction_correct === true ? 'CORRECT' : w.direction_correct === false ? 'WRONG' : '';
+    const correctColor = w.direction_correct === true ? 'var(--green)' : w.direction_correct === false ? 'var(--red)' : '';
+    const pnlStr = w.theoretical_pnl != null ? (w.theoretical_pnl >= 0 ? '+$' : '-$') + Math.abs(w.theoretical_pnl).toFixed(2) : '';
+    const pnlColor = w.theoretical_pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const prevWin = w.prev_window_outcome ? w.prev_window_outcome.toUpperCase() : '--';
+
+    return `<div class="position-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-family:var(--mono);font-size:11px;color:var(--text-dim)">${esc(w.slug.replace('btc-updown-5m-',''))}</span>
+        <span style="font-weight:700;color:${dirColor};font-size:13px">${dir}${correctStr ? ` <span style="font-size:10px;color:${correctColor}">${correctStr}</span>` : ''}</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:4px;font-size:10px">
+        <span style="color:var(--text-dim)">Bias</span>
+        <span style="font-weight:600">${biasPct.toFixed(0)}%</span>
+        <span style="color:var(--text-dim);margin-left:6px">Pre</span>
+        <span style="font-weight:600;color:${btcPreColor}">${btcPreDir}$${Math.abs(btcPre).toFixed(0)}</span>
+        <span style="color:var(--text-dim);margin-left:6px">BTC</span>
+        <span style="font-weight:600;color:${btcColor}">${btcDir}$${Math.abs(btcMove).toFixed(0)}</span>
+        ${pnlStr ? `<span style="margin-left:auto;font-weight:700;color:${pnlColor}">${pnlStr}</span>` : ''}
+      </div>
+      <div style="background:#1a1a2e;border-radius:3px;height:4px;margin-bottom:8px;overflow:hidden">
+        <div style="width:${pct.toFixed(0)}%;height:100%;background:var(--accent);transition:width 0.5s"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px;color:var(--text-dim)">
+        <div>BUY UP: <span style="color:var(--green);font-weight:600">$${(w.buy_up_usdc||0).toFixed(0)}</span> <span style="opacity:0.6">(${avgUp})</span></div>
+        <div>BUY DOWN: <span style="color:var(--red);font-weight:600">$${(w.buy_down_usdc||0).toFixed(0)}</span> <span style="opacity:0.6">(${avgDown})</span></div>
+        <div>SELL UP: <span style="color:var(--text)">$${(w.sell_up_usdc||0).toFixed(0)}</span></div>
+        <div>SELL DOWN: <span style="color:var(--text)">$${(w.sell_down_usdc||0).toFixed(0)}</span></div>
+        <div>Buys: <span style="color:var(--text);font-weight:600">${w.buy_count||0}</span></div>
+        <div>Sells: <span style="color:var(--text);font-weight:600">${w.sell_count||0}</span></div>
+        <div>First: <span style="color:var(--text)">${(w.first_trade_elapsed_s||0).toFixed(0)}s</span></div>
+        <div>Span: <span style="color:var(--text)">${(w.trading_span_s||0).toFixed(0)}s</span></div>
+        <div>Avg Δ: <span style="color:var(--text)">${avgDelta.toFixed(1)}s</span></div>
+        <div>Min Δ: <span style="color:var(--text)">${minDelta.toFixed(1)}s</span></div>
+        <div>Mkt: <span style="color:${mktColor};font-weight:600">${mktOutcome}</span></div>
+        <div>Prev: <span style="color:var(--text)">${prevWin}</span></div>
+      </div>
+    </div>`;
+  }).join('');
+}
 </script>
 </body>
 </html>

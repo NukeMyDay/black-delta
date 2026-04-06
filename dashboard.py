@@ -39,6 +39,7 @@ from src.redeemer import Redeemer
 from src.signal import SignalAggregator
 from src.state import state
 from src.logger import log_trade
+from src.analysis_logger import AnalysisLogger
 
 load_dotenv()
 
@@ -77,6 +78,7 @@ _follow_feed: FollowFeed | None = None
 _signal: SignalAggregator | None = None
 _executor: Executor | None = None
 _redeemer: Redeemer | None = None
+_analysis: AnalysisLogger | None = None
 
 
 # ==================================================================
@@ -676,6 +678,9 @@ async def api_dashboard():
     # Investors
     investor_snapshot = state.get_investor_snapshot()
 
+    # Analysis logger status
+    analysis_data = _analysis.get_status() if _analysis else {}
+
     return JSONResponse({
         "capital": capital_data,
         "config": config_data,
@@ -687,6 +692,7 @@ async def api_dashboard():
         "executor": executor_data,
         "feed": feed_data,
         "investors": investor_snapshot,
+        "analysis": analysis_data,
     })
 
 
@@ -926,6 +932,72 @@ async def api_logs(request: Request):
     return JSONResponse({"logs": logs[-200:]})
 
 
+# --- Analysis Logger Endpoints ---
+
+@app.get("/api/analysis")
+async def api_analysis():
+    """Analysis logger status — active windows + stats."""
+    if _analysis:
+        return JSONResponse(_analysis.get_status())
+    return JSONResponse({"error": "analysis logger not initialized"})
+
+
+@app.get("/api/analysis/windows")
+async def api_analysis_windows(request: Request):
+    """Get saved window summaries. Optional ?date=YYYY-MM-DD."""
+    if not _analysis:
+        return JSONResponse({"error": "analysis logger not initialized"})
+    date = request.query_params.get("date")
+    summaries = _analysis.get_window_summaries(date)
+    return JSONResponse({"date": date, "windows": summaries})
+
+
+@app.get("/api/analysis/export")
+async def api_analysis_export(request: Request):
+    """Export analysis data. ?type=trades|windows&date=YYYY-MM-DD&format=csv|json"""
+    if not _analysis:
+        return JSONResponse({"error": "analysis logger not initialized"})
+
+    date = request.query_params.get(
+        "date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    data_type = request.query_params.get("type", "windows")
+    fmt = request.query_params.get("format", "json")
+
+    if data_type == "windows":
+        summaries = _analysis.get_window_summaries(date)
+        if fmt == "csv" and summaries:
+            buf = io.StringIO()
+            writer = csv.DictWriter(
+                buf, fieldnames=list(summaries[0].keys()), extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(summaries)
+            return Response(
+                buf.getvalue(),
+                media_type="text/csv",
+                headers={"Content-Disposition":
+                          f"attachment; filename=analysis_windows_{date}.csv"},
+            )
+        return JSONResponse(summaries, headers={
+            "Content-Disposition":
+                f"attachment; filename=analysis_windows_{date}.json"
+        })
+
+    if data_type == "trades":
+        trades_path = os.path.join("logs", f"analysis_trades_{date}.csv")
+        if os.path.exists(trades_path):
+            with open(trades_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return Response(
+                content,
+                media_type="text/csv",
+                headers={"Content-Disposition":
+                          f"attachment; filename=analysis_trades_{date}.csv"},
+            )
+        return JSONResponse({"error": f"No trades file for {date}"}, status_code=404)
+
+    return JSONResponse({"error": "type must be 'trades' or 'windows'"}, status_code=400)
+
+
 # ==================================================================
 #  Startup
 # ==================================================================
@@ -935,7 +1007,7 @@ def main():
     parser.add_argument("--port", type=int, default=3000)
     args = parser.parse_args()
 
-    global _follow_feed, _signal, _executor, _redeemer
+    global _follow_feed, _signal, _executor, _redeemer, _analysis
 
     # Restore state from previous run
     state.load_follow_state()
@@ -946,6 +1018,11 @@ def main():
     signal_agg.on_signal = _handle_signal
     # Set signal capital from state
     signal_agg.sim_capital = state.betting_capital
+
+    # --- Analysis Logger (Bonereaper strategy research) ---
+    analysis = AnalysisLogger()
+    _analysis = analysis
+    analysis.start()
 
     # --- Resolution + State Saver + Balance Sync + Redeem Sweep ---
     threading.Thread(target=_resolution_loop, daemon=True).start()
@@ -960,6 +1037,8 @@ def main():
     def _on_rtds_trade(trade):
         handle_follow_trade(trade)
         signal_agg.ingest(trade)
+        if _analysis:
+            _analysis.log_trade(trade)
 
     follow_feed.on_trade = _on_rtds_trade
     follow_feed.load_wallets()
@@ -1019,6 +1098,9 @@ def main():
     finally:
         print("[STATE] Saving state on shutdown...")
         state.save_follow_state()
+        if _analysis:
+            print("[ANALYSIS] Flushing active windows on shutdown...")
+            _analysis.flush_active_windows()
 
 
 if __name__ == "__main__":
