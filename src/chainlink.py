@@ -69,14 +69,26 @@ _contract = None
 _decimals: int = 8
 
 
+_init_attempted = False
+_init_lock = threading.Lock()
+
+
 def _init():
     """Lazy-init Web3 connection and contract, trying multiple RPCs."""
-    global _w3, _contract, _decimals
+    global _w3, _contract, _decimals, _init_attempted
     if _w3 is not None:
         return True
+    # Only attempt init once to avoid repeated blocking on every call
+    with _init_lock:
+        if _w3 is not None:
+            return True
+        if _init_attempted:
+            return False
+        _init_attempted = True
+
     for rpc in POLYGON_RPCS:
         try:
-            w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 5}))
+            w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 3}))
             if not w3.is_connected():
                 continue
             contract = w3.eth.contract(
@@ -91,7 +103,7 @@ def _init():
         except Exception as e:
             log.debug("Chainlink RPC %s failed: %s", rpc, e)
             continue
-    log.error("Chainlink init failed: no working RPC")
+    log.error("Chainlink init failed: no working RPC — falling back to Binance for target")
     return False
 
 
@@ -135,4 +147,14 @@ def get_btc_price_with_timestamp() -> tuple[float, int]:
 
     except Exception as e:
         log.warning("Chainlink price fetch failed: %s", e)
+        # Allow retry on next call (don't permanently give up)
         return _cache_price, _cache_updated_at
+
+
+def reset_init():
+    """Allow re-attempting init (e.g. after network recovers)."""
+    global _init_attempted, _w3, _contract
+    with _init_lock:
+        _init_attempted = False
+        _w3 = None
+        _contract = None

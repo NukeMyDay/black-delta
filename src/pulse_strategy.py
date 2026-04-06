@@ -179,8 +179,9 @@ class PulseStrategy:
                     "remaining": round(remaining),
                 }
 
-            # Chainlink price (for dashboard display)
-            cl_price = chainlink_btc_price()
+            # Chainlink price — use cached value only (never block the API thread)
+            from src.chainlink import _cache_price as _cl_cached
+            cl_price = _cl_cached
 
             return {
                 "running": self._running,
@@ -227,14 +228,16 @@ class PulseStrategy:
                     # First resolve previous window
                     self._resolve_completed()
 
-                    # Snapshot Chainlink BTC price at window boundary.
-                    # This is the EXACT oracle Polymarket uses for resolution.
-                    # Binance may differ on close calls — Chainlink is ground truth.
-                    cl_price = chainlink_btc_price()
+                    # Snapshot target price at window boundary.
+                    # Try Chainlink (Polymarket's resolution oracle) first,
+                    # fall back to Binance if RPC is unreachable.
+                    try:
+                        cl_price = chainlink_btc_price()
+                    except Exception:
+                        cl_price = 0.0
                     if cl_price > 0:
                         self._window_start_prices[window_start] = cl_price
                     else:
-                        # Fallback to Binance if Chainlink is unreachable
                         snap_price = self.btc_feed.btc_price
                         if snap_price > 0:
                             self._window_start_prices[window_start] = snap_price
@@ -269,7 +272,10 @@ class PulseStrategy:
         target_price = self._window_start_prices.get(window_start, 0.0)
         if target_price <= 0:
             # Missed the snapshot — try Chainlink now as fallback
-            target_price = chainlink_btc_price()
+            try:
+                target_price = chainlink_btc_price()
+            except Exception:
+                target_price = 0.0
             if target_price > 0:
                 self._window_start_prices[window_start] = target_price
 
