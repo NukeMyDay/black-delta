@@ -772,6 +772,55 @@ async function poll() {
 setInterval(poll, 2000);
 poll();
 
+// 1s live ticker — updates countdowns + BTC price between polls
+setInterval(() => {
+  if (!lastData) return;
+
+  // Phase: BTC bar countdown
+  const phaseActive = Object.values((lastData.phase || {}).active_windows || {});
+  if (phaseActive.length > 0) {
+    const aw = phaseActive[0];
+    const now = Date.now() / 1000;
+    const rem = Math.max(0, Math.round((aw.window_start || 0) + 300 - now));
+    const rm = Math.floor(rem / 60);
+    const rs = String(rem % 60).padStart(2, '0');
+    setText('btc-bar-countdown', rm + ':' + rs);
+    // Progress bar
+    const elapsed = now - (aw.window_start || now);
+    const pct = Math.min(100, Math.round(elapsed / 300 * 100));
+    const cards = document.querySelectorAll('#positions-grid .pos-progress-bar');
+    cards.forEach(bar => { bar.style.width = pct + '%'; });
+    // Phase label
+    const phase = aw.current_phase != null ? 'P' + (aw.current_phase + 1) : '--';
+    setText('btc-bar-phase', phase);
+  }
+
+  // Phase: BTC live price from feed
+  const btcFd = lastData.btc_feed || {};
+  if (btcFd.btc_price > 0) {
+    setText('btc-bar-price', '$' + btcFd.btc_price.toLocaleString('en-US', {maximumFractionDigits: 0}));
+  }
+
+  // Pulse: current window countdown + progress
+  const pulse = lastData.pulse || {};
+  const cw = pulse.current_window;
+  const cwEl = document.getElementById('pulse-window-content');
+  if (cw && cw.outcome === 'pending' && cwEl) {
+    const now = Date.now() / 1000;
+    const rem = Math.max(0, Math.round((cw.window_start || 0) + 300 - now));
+    const rm = Math.floor(rem / 60);
+    const rs = String(rem % 60).padStart(2, '0');
+    // Update countdown text
+    const countdownEl = cwEl.querySelector('[data-pulse-countdown]');
+    if (countdownEl) countdownEl.textContent = rm + ':' + rs;
+    // Update progress bar
+    const elapsed = now - (cw.window_start || now);
+    const pct = Math.min(100, Math.round(elapsed / 300 * 100));
+    const bar = cwEl.querySelector('.pos-progress-bar');
+    if (bar) bar.style.width = pct + '%';
+  }
+}, 1000);
+
 // ============================================================
 //  Render
 // ============================================================
@@ -1697,7 +1746,7 @@ function renderPulse(d) {
             <span style="font-family:var(--mono);font-size:14px;font-weight:600;color:var(--text)">$${Number(cw.target_price||0).toLocaleString('en-US',{maximumFractionDigits:0})}</span>
             <span style="font-family:var(--mono);font-size:13px;font-weight:600;color:${dirColor}">Dist ${dir === 'DOWN' ? '-' : '+'}$${Number(cw.distance||0).toFixed(1)}</span>
           </div>
-          <span style="font-family:var(--mono);font-size:14px;font-weight:600;color:var(--text)">${rm}:${rs}</span>
+          <span data-pulse-countdown style="font-family:var(--mono);font-size:14px;font-weight:600;color:var(--text)">${rm}:${rs}</span>
         </div>
         <div class="pos-progress" style="margin:8px 0"><div class="pos-progress-bar" style="width:${pct}%;background:${barColor}"></div></div>
         <div style="display:flex;gap:16px;font-size:11px;color:var(--text-dim);font-family:var(--mono)">
