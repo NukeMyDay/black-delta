@@ -279,21 +279,32 @@ class PhaseStrategy:
                     time.sleep(1)
                     continue
 
-                # Process active windows (lock protects against dashboard reads)
+                # Snapshot active windows under lock, then process WITHOUT lock.
+                # Network calls (fetch_midpoint, fetch_market) must NOT hold
+                # the lock — otherwise get_status() blocks the dashboard API.
                 with self._lock:
                     expired = []
+                    to_process = []
                     for slug, ws in list(self.active_windows.items()):
                         if ws.remaining <= 0:
                             expired.append(slug)
-                            continue
-                        self._process_window(ws)
+                        else:
+                            to_process.append(ws)
 
-                    for slug in expired:
-                        ws = self.active_windows.pop(slug)
+                # Process windows WITHOUT lock (network I/O happens here)
+                for ws in to_process:
+                    self._process_window(ws)
+
+                # Finalize expired windows (brief lock for state mutation only)
+                for slug in expired:
+                    with self._lock:
+                        ws = self.active_windows.pop(slug, None)
+                    if ws:
                         ws.active = False
                         self._finalize_window(ws)
 
-                    self._check_new_windows()
+                # Check for new windows (network I/O) WITHOUT lock
+                self._check_new_windows()
                 time.sleep(1)
 
             except Exception as e:
@@ -312,10 +323,11 @@ class PhaseStrategy:
             return
 
         slug = f"btc-updown-5m-{window_start}"
-        if slug in self.active_windows:
-            return
-        if len(self.active_windows) >= 3:
-            return
+        with self._lock:
+            if slug in self.active_windows:
+                return
+            if len(self.active_windows) >= 3:
+                return
 
         # Budget: respect dashboard max_bet_per_window setting
         max_bet = getattr(self.state, "max_bet_per_window", None)
@@ -352,8 +364,9 @@ class PhaseStrategy:
             ws.neg_risk = info.get("neg_risk", False)
             ws.tick_size = info.get("tick_size", "0.01")
 
-        self.active_windows[slug] = ws
-        self.total_windows += 1
+        with self._lock:
+            self.active_windows[slug] = ws
+            self.total_windows += 1
         log.info(
             f"New window: {slug} | BTC=${ws.btc_at_start:.0f} | "
             f"Budget=${budget:.0f}"
