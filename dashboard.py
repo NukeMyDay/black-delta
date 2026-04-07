@@ -156,6 +156,11 @@ def _state_saver_loop(interval: int = 60):
             state.save_follow_state()
         except Exception as e:
             print(f"[STATE] Save failed: {e}")
+        try:
+            if _pulse:
+                _pulse.save_state()
+        except Exception as e:
+            print(f"[PULSE] Save failed: {e}")
 
 
 def _sync_executor_limits():
@@ -752,6 +757,7 @@ def main():
     pulse = PulseStrategy(btc_feed, executor)
     _pulse = pulse
     pulse.paper_mode = True  # Always paper until validated
+    pulse.load_state()
     pulse.start()
     print(f"[PULSE] PULSE Strategy started (PAPER mode)")
 
@@ -771,6 +777,9 @@ def main():
     finally:
         print("[STATE] Saving state on shutdown...")
         state.save_follow_state()
+        if _pulse:
+            print("[PULSE] Saving PULSE state...")
+            _pulse.save_state()
         if _phase:
             print("[PHASE] Stopping phase strategy...")
             _phase.stop()

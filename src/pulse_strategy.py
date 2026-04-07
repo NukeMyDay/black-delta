@@ -18,8 +18,9 @@ Core logic:
 Paper mode by default — logs decisions without placing orders.
 """
 
+import json
 import logging
-import math
+import os
 import threading
 import time
 from collections import deque
@@ -33,6 +34,8 @@ from src.polymarket import (
 )
 
 log = logging.getLogger("pulse_strategy")
+
+PULSE_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "pulse_state.json")
 
 # Strategy parameters
 SLIPPAGE = 0.02           # $0.02 assumed FAK slippage
@@ -210,6 +213,83 @@ class PulseStrategy:
                     "kelly_fraction": KELLY_FRACTION,
                 },
             }
+
+    # ------------------------------------------------------------------
+    #  State Persistence
+    # ------------------------------------------------------------------
+
+    def save_state(self):
+        """Persist PULSE stats and bet history to disk."""
+        with self._lock:
+            data = {
+                "paper_capital": self.paper_capital,
+                "starting_capital": self.starting_capital,
+                "total_bets": self.total_bets,
+                "wins": self.wins,
+                "losses": self.losses,
+                "skips": self.skips,
+                "total_pnl": self.total_pnl,
+                "daily_pnl": self.daily_pnl,
+                "daily_date": self._daily_date,
+                "max_bet_cap": self.max_bet_cap,
+                "bets": [b.to_dict() for b in self.bets if b.outcome != "skip"],
+            }
+        try:
+            os.makedirs(os.path.dirname(PULSE_STATE_FILE), exist_ok=True)
+            tmp = PULSE_STATE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, PULSE_STATE_FILE)
+        except Exception as e:
+            print(f"[PULSE] Save failed: {e}")
+
+    def load_state(self):
+        """Restore PULSE stats and bet history from disk."""
+        try:
+            with open(PULSE_STATE_FILE, "r") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+
+        with self._lock:
+            self.paper_capital = data.get("paper_capital", DEFAULT_CAPITAL)
+            self.starting_capital = data.get("starting_capital", DEFAULT_CAPITAL)
+            self.total_bets = data.get("total_bets", 0)
+            self.wins = data.get("wins", 0)
+            self.losses = data.get("losses", 0)
+            self.skips = data.get("skips", 0)
+            self.total_pnl = data.get("total_pnl", 0.0)
+            self.daily_pnl = data.get("daily_pnl", 0.0)
+            self._daily_date = data.get("daily_date", "")
+            self.max_bet_cap = data.get("max_bet_cap", DEFAULT_MAX_BET)
+
+            # Restore bet history
+            self.bets.clear()
+            for bd in data.get("bets", []):
+                bet = PulseBet(
+                    slug=bd.get("slug", ""),
+                    direction=bd.get("direction", ""),
+                    btc_price=bd.get("btc_price", 0),
+                    target_price=bd.get("target_price", 0),
+                    entry_price=bd.get("entry_price", 0),
+                    stake=bd.get("stake", 0),
+                    edge_pct=bd.get("edge_pct", 0),
+                    distance=bd.get("distance", 0),
+                    effective_wr=bd.get("effective_wr", 0),
+                )
+                bet.time = bd.get("time", "")
+                bet.outcome = bd.get("outcome", "pending")
+                bet.pnl = bd.get("pnl", 0)
+                bet.window_start = bd.get("window_start", 0)
+                bet.skip_reason = bd.get("skip_reason")
+                self.bets.append(bet)
+                # Re-populate pending bets for unresolved ones
+                if bet.outcome == "pending":
+                    self.pending_bets[bet.slug] = bet
+
+        total = self.wins + self.losses
+        print(f"[PULSE] State restored: {total} bets, {self.wins}W/{self.losses}L, "
+              f"P&L ${self.total_pnl:+.2f}, capital ${self.paper_capital:.2f}")
 
     # ------------------------------------------------------------------
     #  Main Loop
