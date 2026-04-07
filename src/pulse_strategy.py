@@ -310,13 +310,15 @@ class PulseStrategy:
 
         while self._running:
             try:
+                # Always try to resolve pending bets (not just at window boundaries)
+                if self.pending_bets:
+                    self._resolve_completed()
+
                 now = int(time.time())
                 window_start = now - (now % 300)
 
                 # New window? Process it
                 if window_start > self._last_processed_window:
-                    # First resolve previous window
-                    self._resolve_completed()
 
                     # Snapshot target price at window boundary.
                     # Try Chainlink (Polymarket's resolution oracle) first,
