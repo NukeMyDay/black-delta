@@ -224,13 +224,13 @@ def _balance_sync_loop(interval: int = 60):
 # ==================================================================
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard():
+def dashboard():
     with open("templates/dashboard.html", "r", encoding="utf-8") as f:
         return f.read()
 
 
 @app.get("/api/dashboard")
-async def api_dashboard():
+def api_dashboard():
     """Unified dashboard endpoint — single poll for all data."""
     # Capital — portfolio = cash + pending positions
     cash = state.polymarket_balance if state.polymarket_balance is not None else state.betting_capital
@@ -417,12 +417,12 @@ async def api_pulse_config(request: Request):
 
 
 @app.get("/api/pulse/export")
-async def api_pulse_export(format: str = "csv"):
+def api_pulse_export(format: str = "csv"):
     """Export PULSE bets as CSV or JSON."""
     if not _pulse:
         return JSONResponse({"error": "PULSE not initialized"}, status_code=500)
 
-    bets = [b.to_dict() for b in _pulse.bets if b.outcome != "skip"]
+    bets = [b.to_dict() for b in _pulse.bets if b.outcome not in ("skip", "void")]
 
     if format == "json":
         return Response(
@@ -516,7 +516,7 @@ async def api_investor_withdraw(index: int, request: Request):
 # --- Follow Endpoints ---
 
 @app.get("/api/follow")
-async def api_follow():
+def api_follow():
     """Follow mode state."""
     data = state.get_follow_snapshot()
     if _follow_feed:
@@ -525,7 +525,7 @@ async def api_follow():
 
 
 @app.get("/api/follow/export")
-async def api_follow_export(format: str = "csv"):
+def api_follow_export(format: str = "csv"):
     """Export follow trades as CSV or JSON."""
     trades = list(state.follow_trades)
     if format == "json":
@@ -581,7 +581,7 @@ async def api_follow_remove_wallet(request: Request):
 
 
 @app.get("/api/follow/feed-status")
-async def api_follow_feed_status():
+def api_follow_feed_status():
     """Follow feed health."""
     if _follow_feed:
         return JSONResponse(_follow_feed.get_status())
@@ -589,7 +589,7 @@ async def api_follow_feed_status():
 
 
 @app.get("/api/logs")
-async def api_logs(request: Request):
+def api_logs(request: Request):
     """Return recent log lines. Optional ?since=<iso> to get only new lines."""
     since = request.query_params.get("since", "")
     with _log_lock:
@@ -602,7 +602,7 @@ async def api_logs(request: Request):
 # --- Analysis Logger Endpoints ---
 
 @app.get("/api/analysis")
-async def api_analysis():
+def api_analysis():
     """Analysis logger status — active windows + stats."""
     if _analysis:
         return JSONResponse(_analysis.get_status())
@@ -610,7 +610,7 @@ async def api_analysis():
 
 
 @app.get("/api/analysis/windows")
-async def api_analysis_windows(request: Request):
+def api_analysis_windows(request: Request):
     """Get saved window summaries. Optional ?date=YYYY-MM-DD."""
     if not _analysis:
         return JSONResponse({"error": "analysis logger not initialized"})
@@ -620,7 +620,7 @@ async def api_analysis_windows(request: Request):
 
 
 @app.get("/api/analysis/export")
-async def api_analysis_export(request: Request):
+def api_analysis_export(request: Request):
     """Export analysis data. ?type=trades|windows&date=YYYY-MM-DD&format=csv|json"""
     if not _analysis:
         return JSONResponse({"error": "analysis logger not initialized"})
@@ -781,11 +781,14 @@ def main():
     print(f"  http://localhost:{args.port}\n")
 
     try:
-        uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
+        uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning",
+                    timeout_keep_alive=30)
     finally:
         print("[STATE] Saving state on shutdown...")
         state.save_follow_state()
         if _pulse:
+            print("[PULSE] Stopping PULSE strategy...")
+            _pulse.stop()
             print("[PULSE] Saving PULSE state...")
             _pulse.save_state()
         if _phase:

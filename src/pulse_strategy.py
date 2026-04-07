@@ -27,7 +27,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 from src.binance_ws import BinancePriceFeed
-from src.chainlink import get_btc_price as chainlink_btc_price
+from src.chainlink import get_btc_price as chainlink_btc_price, get_btc_price_with_timestamp
 from src.polymarket import (
     fetch_market, fetch_midpoint, parse_market_data,
     get_current_event_slug,
@@ -232,7 +232,7 @@ class PulseStrategy:
                 "daily_pnl": self.daily_pnl,
                 "daily_date": self._daily_date,
                 "max_bet_cap": self.max_bet_cap,
-                "bets": [b.to_dict() for b in self.bets if b.outcome != "skip"],
+                "bets": [b.to_dict() for b in self.bets if b.outcome not in ("skip", "void")],
             }
         try:
             os.makedirs(os.path.dirname(PULSE_STATE_FILE), exist_ok=True)
@@ -329,14 +329,10 @@ class PulseStrategy:
 
         while self._running:
             try:
-                # Always try to resolve pending bets (not just at window boundaries)
-                if self.pending_bets:
-                    self._resolve_completed()
-
                 now = int(time.time())
                 window_start = now - (now % 300)
 
-                # New window? Process it
+                # New window? Snapshot target, wait for momentum, then process
                 if window_start > self._last_processed_window:
 
                     # Snapshot target price at window boundary.
@@ -353,12 +349,20 @@ class PulseStrategy:
                         if snap_price > 0:
                             self._window_start_prices[window_start] = snap_price
 
-                    # Wait 3 seconds for BTC to move from target
-                    time.sleep(3)
+                    # Wait 3 seconds for BTC to move from target.
+                    # Resolve pending bets during the wait instead of blocking.
+                    for _ in range(3):
+                        if self.pending_bets:
+                            self._resolve_completed()
+                        time.sleep(1)
 
                     # Process new window
                     self._process_window(window_start)
                     self._last_processed_window = window_start
+
+                # Resolve pending bets every tick (not just at window boundaries)
+                if self.pending_bets:
+                    self._resolve_completed()
 
                 time.sleep(1)
             except Exception as e:
@@ -466,9 +470,13 @@ class PulseStrategy:
         effective_wr = BASE_WIN_RATE + entry_boost + dist_boost
 
         # 8. Kelly sizing with dynamic WR
+        # Available capital = total minus stakes already committed to pending bets
+        pending_committed = sum(b.stake for b in self.pending_bets.values())
+        available_capital = max(0, self.paper_capital - pending_committed)
+
         b = (1.0 / entry_price) - 1.0  # payout odds
         kelly = max(0, (effective_wr * b - (1 - effective_wr)) / b)
-        stake = self.paper_capital * kelly * KELLY_FRACTION
+        stake = available_capital * kelly * KELLY_FRACTION
 
         # FILTER 3: Minimum stake (Kelly says no edge)
         if stake < MIN_STAKE:
@@ -476,8 +484,8 @@ class PulseStrategy:
                               f"stake_{stake:.2f}<{MIN_STAKE}")
             return
 
-        # Apply caps: max bet cap and 10% of capital hard limit
-        stake = round(min(stake, self.max_bet_cap, self.paper_capital * 0.10), 2)
+        # Apply caps: max bet cap and 10% of available capital hard limit
+        stake = round(min(stake, self.max_bet_cap, available_capital * 0.10), 2)
 
         # Calculate edge vs implied
         implied_prob = entry_price
@@ -508,26 +516,50 @@ class PulseStrategy:
               f"dist ${abs_distance:.1f} edge {edge_pct:.1f}% wr {effective_wr:.1%}")
 
     def _resolve_completed(self):
-        """Resolve bets from completed windows."""
+        """Resolve bets from completed windows.
+
+        Primary resolution: Chainlink oracle price with timestamp verification.
+        Only trusts the price if Chainlink's updatedAt >= window_end (ensuring
+        we have a post-window price, same data Polymarket uses).
+        Fallback: Polymarket API settlement check.
+        """
         now = time.time()
         resolved_slugs = []
 
         for slug, bet in list(self.pending_bets.items()):
             window_end = bet.window_start + 300
-            if now < window_end + 15:
-                continue  # Window not done yet
+            # Wait at least 30s after window end — Chainlink updates ~every 27s
+            if now < window_end + 30:
+                continue
 
-            # Fetch market outcome
-            from src.polymarket import fetch_market_outcome
-            try:
-                winner = fetch_market_outcome(slug)
-            except Exception:
-                winner = None
+            winner = None
+
+            # Method 1: Chainlink oracle with timestamp verification
+            # Only trust the price if the oracle updated AFTER the window ended
+            if bet.target_price > 0:
+                try:
+                    end_price, updated_at = get_btc_price_with_timestamp()
+                except Exception:
+                    end_price, updated_at = 0.0, 0
+                if end_price > 0 and updated_at >= window_end:
+                    # Polymarket "Up" = strictly above target. Equal = Down.
+                    if end_price > bet.target_price:
+                        winner = "up"
+                    else:
+                        winner = "down"
+
+            # Method 2: Polymarket API (fallback — checks settled prices)
+            if not winner:
+                from src.polymarket import fetch_market_outcome
+                try:
+                    winner = fetch_market_outcome(slug)
+                except Exception:
+                    winner = None
 
             if not winner:
-                if now > window_end + 120:
-                    # Give up after 2 minutes — count as loss
-                    self._record_resolution(bet, won=False, timed_out=True)
+                # If still no resolution after 10 minutes, void the bet
+                if now > window_end + 600:
+                    self._record_void(bet)
                     resolved_slugs.append(slug)
                 continue
 
@@ -565,6 +597,16 @@ class PulseStrategy:
         print(f"[PULSE] {result} {bet.direction} {bet.slug[-10:]}{suffix} | "
               f"P&L ${bet.pnl:+.2f} | Total ${self.total_pnl:+.2f} | "
               f"{self.wins}W/{self.losses}L")
+
+    def _record_void(self, bet: PulseBet):
+        """Void a bet that couldn't be resolved — no P&L impact."""
+        with self._lock:
+            bet.outcome = "void"
+            bet.pnl = 0.0
+            # Don't count towards wins/losses — remove from total
+            self.total_bets = max(0, self.total_bets - 1)
+        print(f"[PULSE] VOID {bet.direction} {bet.slug[-10:]} | "
+              f"Could not resolve after 10min — no P&L impact")
 
     def _record_skip(self, slug: str, window_start: int, btc_price: float,
                      target_price: float, reason: str):

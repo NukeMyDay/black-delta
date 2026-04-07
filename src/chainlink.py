@@ -78,7 +78,9 @@ def _init():
     global _w3, _contract, _decimals, _init_attempted
     if _w3 is not None:
         return True
-    # Only attempt init once to avoid repeated blocking on every call
+    # All init work inside lock to prevent race conditions:
+    # without this, Thread A could be mid-RPC-connect while Thread B
+    # sees _init_attempted=True and returns False prematurely.
     with _init_lock:
         if _w3 is not None:
             return True
@@ -86,25 +88,25 @@ def _init():
             return False
         _init_attempted = True
 
-    for rpc in POLYGON_RPCS:
-        try:
-            w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 3}))
-            if not w3.is_connected():
+        for rpc in POLYGON_RPCS:
+            try:
+                w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 3}))
+                if not w3.is_connected():
+                    continue
+                contract = w3.eth.contract(
+                    address=Web3.to_checksum_address(BTC_USD_FEED),
+                    abi=AGGREGATOR_ABI,
+                )
+                _decimals = contract.functions.decimals().call()
+                _w3 = w3
+                _contract = contract
+                log.info("Chainlink BTC/USD initialized via %s (decimals=%d)", rpc, _decimals)
+                return True
+            except Exception as e:
+                log.debug("Chainlink RPC %s failed: %s", rpc, e)
                 continue
-            contract = w3.eth.contract(
-                address=Web3.to_checksum_address(BTC_USD_FEED),
-                abi=AGGREGATOR_ABI,
-            )
-            _decimals = contract.functions.decimals().call()
-            _w3 = w3
-            _contract = contract
-            log.info("Chainlink BTC/USD initialized via %s (decimals=%d)", rpc, _decimals)
-            return True
-        except Exception as e:
-            log.debug("Chainlink RPC %s failed: %s", rpc, e)
-            continue
-    log.error("Chainlink init failed: no working RPC — falling back to Binance for target")
-    return False
+        log.error("Chainlink init failed: no working RPC — falling back to Binance for target")
+        return False
 
 
 def get_btc_price() -> float:
