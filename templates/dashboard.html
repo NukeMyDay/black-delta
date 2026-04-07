@@ -1621,6 +1621,9 @@ function colorizeLog(msg) {
   if (msg.includes('[EXEC]')) return `<span style="color:#f59e0b">${esc(msg)}</span>`;
   if (msg.includes('[RISK]') || msg.includes('AUTO-PAUSE')) return `<span style="color:#ef4444;font-weight:600">${esc(msg)}</span>`;
   if (msg.includes('[REDEEM]')) return `<span style="color:#a78bfa">${esc(msg)}</span>`;
+  if (msg.includes('[PULSE]')) return `<span style="color:#f472b6">${esc(msg)}</span>`;
+  if (msg.includes('[PHASE]') || msg.includes('[PAPER]') || msg.includes('[LIVE]')) return `<span style="color:#34d399">${esc(msg)}</span>`;
+  if (msg.includes('[BTC]')) return `<span style="color:#fbbf24">${esc(msg)}</span>`;
   if (msg.includes('[BALANCE]') || msg.includes('[STATE]')) return `<span style="color:rgba(255,255,255,0.35)">${esc(msg)}</span>`;
   if (msg.includes('[RESOLVE]')) return `<span style="color:#2dd4bf">${esc(msg)}</span>`;
   return `<span>${esc(msg)}</span>`;

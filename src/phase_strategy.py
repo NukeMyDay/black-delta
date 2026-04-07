@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timezone
 
 from src.binance_ws import BinancePriceFeed
+from src.chainlink import get_btc_price as chainlink_btc_price, get_btc_price_with_timestamp
 from src.executor import Executor
 from src.polymarket import (
     fetch_market, fetch_midpoint, parse_market_data,
@@ -105,6 +106,7 @@ class WindowState:
 
         # BTC reference (per-window, NOT global)
         self.btc_at_start: float = 0.0
+        self.target_price: float = 0.0  # Chainlink price at window start (resolution oracle)
         self.last_btc_move: float = 0.0
         self.current_direction: str = ""
 
@@ -180,6 +182,7 @@ class WindowState:
             "net_direction": self.net_direction,
             "buy_bias": round(self.buy_bias, 4),
             "btc_at_start": self.btc_at_start,
+            "target_price": self.target_price,
             "last_btc_move": round(self.last_btc_move, 2),
             "elapsed": round(self.elapsed, 1),
             "remaining": round(self.remaining, 1),
@@ -320,6 +323,14 @@ class PhaseStrategy:
 
         ws = WindowState(slug, window_start, budget)
         ws.btc_at_start = self.btc.btc_price
+
+        # Snapshot Chainlink price as target (same oracle Polymarket uses)
+        try:
+            ws.target_price = chainlink_btc_price()
+        except Exception:
+            ws.target_price = 0.0
+        if ws.target_price <= 0:
+            ws.target_price = ws.btc_at_start  # fallback to Binance
 
         # Fetch market data
         market = fetch_market(slug)
@@ -531,19 +542,41 @@ class PhaseStrategy:
             if slug not in self._resolving_slugs:
                 return  # already resolved or removed
 
-        try:
-            from src.polymarket import fetch_market_outcome
-            outcome = fetch_market_outcome(slug)
-        except Exception as e:
-            log.debug(f"Resolution fetch error for {slug}: {e}")
-            outcome = None
+        outcome = None
+
+        # Method 1: Chainlink oracle with timestamp verification
+        # Find the target price from the completed window summary
+        target_price = 0.0
+        with self._lock:
+            for summary in self.completed_windows:
+                if summary["slug"] == slug:
+                    target_price = summary.get("target_price", 0) or summary.get("btc_at_start", 0)
+                    break
+
+        if target_price > 0:
+            try:
+                window_start = int(slug.split("-")[-1])
+                window_end = window_start + 300
+                end_price, updated_at = get_btc_price_with_timestamp()
+                if end_price > 0 and updated_at >= window_end:
+                    outcome = "up" if end_price > target_price else "down"
+            except Exception as e:
+                log.debug(f"Chainlink resolution error for {slug}: {e}")
+
+        # Method 2: Polymarket API fallback
+        if not outcome:
+            try:
+                from src.polymarket import fetch_market_outcome
+                outcome = fetch_market_outcome(slug)
+            except Exception as e:
+                log.debug(f"Polymarket resolution error for {slug}: {e}")
 
         if not outcome:
-            if attempt < 3:
+            if attempt < 5:
                 threading.Timer(30, self._resolve_window,
                                 args=[slug, attempt + 1]).start()
             else:
-                log.warning(f"Could not resolve {slug} after {attempt+1} attempts")
+                log.warning(f"Could not resolve {slug} after {attempt+1} attempts — voiding")
                 with self._lock:
                     self._resolving_slugs.discard(slug)
             return
