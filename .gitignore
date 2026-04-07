@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 data/*.json
 !data/follow_wallets.json
+!data/pulse_state.json
+!data/phase_state.json
 data/*.csv
 logs/*.log
 .venv/
