@@ -42,6 +42,7 @@ SLIPPAGE = 0.02           # $0.02 assumed FAK slippage
 ENTRY_MIN = 0.50          # Minimum entry price (filter noise)
 ENTRY_MAX = 0.70          # Maximum entry price (filter low payout)
 MIN_DISTANCE = 3.0        # Minimum |BTC - target| in USD
+MIN_EDGE = 5.0            # Minimum edge % (effective_wr - implied_prob) to bet
 KELLY_FRACTION = 1 / 8    # Conservative Kelly fraction
 MIN_STAKE = 1.0           # Minimum bet size
 DEFAULT_CAPITAL = 1000.0  # Paper trading capital
@@ -208,6 +209,7 @@ class PulseStrategy:
                     "entry_min": ENTRY_MIN,
                     "entry_max": ENTRY_MAX,
                     "min_distance": MIN_DISTANCE,
+                    "min_edge": MIN_EDGE,
                     "slippage": SLIPPAGE,
                     "base_wr": BASE_WIN_RATE,
                     "kelly_fraction": KELLY_FRACTION,
@@ -490,6 +492,12 @@ class PulseStrategy:
         # Calculate edge vs implied
         implied_prob = entry_price
         edge_pct = (effective_wr - implied_prob) * 100
+
+        # FILTER 4: Minimum edge (below this, slippage + model error eats the edge)
+        if edge_pct < MIN_EDGE:
+            self._record_skip(slug, window_start, btc_price, target_price,
+                              f"edge_{edge_pct:.1f}%<{MIN_EDGE}%")
+            return
 
         # 9. Place bet (paper mode)
         bet = PulseBet(
