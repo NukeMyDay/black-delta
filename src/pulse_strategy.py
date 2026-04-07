@@ -263,8 +263,14 @@ class PulseStrategy:
             self._daily_date = data.get("daily_date", "")
             self.max_bet_cap = data.get("max_bet_cap", DEFAULT_MAX_BET)
 
-            # Restore bet history
+            # Restore bet history and recompute stats from actual bets
             self.bets.clear()
+            self.pending_bets.clear()
+            self.wins = 0
+            self.losses = 0
+            self.total_pnl = 0.0
+            self.total_bets = 0
+
             for bd in data.get("bets", []):
                 bet = PulseBet(
                     slug=bd.get("slug", ""),
@@ -283,9 +289,22 @@ class PulseStrategy:
                 bet.window_start = bd.get("window_start", 0)
                 bet.skip_reason = bd.get("skip_reason")
                 self.bets.append(bet)
-                # Re-populate pending bets for unresolved ones
-                if bet.outcome == "pending":
+
+                # Recompute stats from bet outcomes
+                if bet.outcome == "win":
+                    self.wins += 1
+                    self.total_pnl += bet.pnl
+                    self.total_bets += 1
+                elif bet.outcome == "lose":
+                    self.losses += 1
+                    self.total_pnl += bet.pnl
+                    self.total_bets += 1
+                elif bet.outcome == "pending":
                     self.pending_bets[bet.slug] = bet
+                    self.total_bets += 1
+
+            # Recompute capital from starting + total P&L
+            self.paper_capital = self.starting_capital + self.total_pnl
 
         total = self.wins + self.losses
         print(f"[PULSE] State restored: {total} bets, {self.wins}W/{self.losses}L, "
