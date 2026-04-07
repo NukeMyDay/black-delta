@@ -274,7 +274,7 @@ class BinancePriceFeed:
             "btc_ask": round(self.btc_ask, 2),
             "btc_move": round(self.btc_move, 2),
             "window_ref": round(self._window_ref_price, 2),
-            "price_age_ms": round(self.price_age_ms, 1),
+            "price_age_ms": round(self.price_age_ms, 1) if self.price_age_ms < 1e9 else 0,
             "update_count": self.update_count,
             "reconnects": self._reconnect_count,
             "latency_last_ms": round(self.latency_last_ms, 1),

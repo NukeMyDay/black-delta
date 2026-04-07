@@ -723,16 +723,18 @@ def main():
         _sync_executor_limits()
         print(f"  Max bet: ${executor.max_bet_usd:.2f}")
 
-        # --- Auto-Redeemer ---
-        redeemer = Redeemer()
-        _redeemer = redeemer
-        private_key = os.getenv("POLY_PRIVATE_KEY", "")
-        signer = executor.client.signer.address()
-        funder = executor.client.builder.funder
-        sig_type = executor.client.builder.sig_type
-        redeemer.initialize(private_key, signer, funder, sig_type)
-        # Queue any previously resolved positions for redemption
-        redeemer.queue_resolved_trades(state.follow_trades)
+        # --- Auto-Redeemer (only in live mode, not paper/sim) ---
+        if not state.sim_mode:
+            redeemer = Redeemer()
+            _redeemer = redeemer
+            private_key = os.getenv("POLY_PRIVATE_KEY", "")
+            signer = executor.client.signer.address()
+            funder = executor.client.builder.funder
+            sig_type = executor.client.builder.sig_type
+            redeemer.initialize(private_key, signer, funder, sig_type)
+            redeemer.queue_resolved_trades(state.follow_trades)
+        else:
+            print("  Redeemer: SKIPPED (paper mode)")
     else:
         print("  Mode: SIMULATION (set POLY_* env vars for live)")
 
