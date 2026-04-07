@@ -519,12 +519,15 @@ class PulseStrategy:
 
             # Fetch market outcome
             from src.polymarket import fetch_market_outcome
-            winner = fetch_market_outcome(slug)
+            try:
+                winner = fetch_market_outcome(slug)
+            except Exception:
+                winner = None
+
             if not winner:
                 if now > window_end + 120:
-                    # Give up after 2 minutes
-                    bet.outcome = "lose"
-                    bet.pnl = -bet.stake
+                    # Give up after 2 minutes — count as loss
+                    self._record_resolution(bet, won=False, timed_out=True)
                     resolved_slugs.append(slug)
                 continue
 
@@ -533,30 +536,35 @@ class PulseStrategy:
                 (winner.lower() == "up" and bet.direction == "UP") or
                 (winner.lower() == "down" and bet.direction == "DOWN")
             )
-
-            with self._lock:
-                if won:
-                    payout = bet.stake * (1.0 / bet.entry_price)
-                    bet.pnl = round(payout - bet.stake, 2)
-                    bet.outcome = "win"
-                    self.wins += 1
-                    self.paper_capital += bet.pnl
-                else:
-                    bet.pnl = -bet.stake
-                    bet.outcome = "lose"
-                    self.losses += 1
-                    self.paper_capital -= bet.stake
-
-                self.total_pnl += bet.pnl
-                self.daily_pnl += bet.pnl
-
-            result = "WIN" if won else "LOSE"
-            print(f"[PULSE] {result} {bet.direction} {slug[-10:]} | "
-                  f"P&L ${bet.pnl:+.2f} | Total ${self.total_pnl:+.2f}")
+            self._record_resolution(bet, won=won)
             resolved_slugs.append(slug)
 
         for slug in resolved_slugs:
             self.pending_bets.pop(slug, None)
+
+    def _record_resolution(self, bet: PulseBet, won: bool, timed_out: bool = False):
+        """Record a bet resolution — updates all stats atomically."""
+        with self._lock:
+            if won:
+                payout = bet.stake * (1.0 / bet.entry_price)
+                bet.pnl = round(payout - bet.stake, 2)
+                bet.outcome = "win"
+                self.wins += 1
+                self.paper_capital += bet.pnl
+            else:
+                bet.pnl = -bet.stake
+                bet.outcome = "lose"
+                self.losses += 1
+                self.paper_capital -= bet.stake
+
+            self.total_pnl += bet.pnl
+            self.daily_pnl += bet.pnl
+
+        suffix = " (timeout)" if timed_out else ""
+        result = "WIN" if won else "LOSE"
+        print(f"[PULSE] {result} {bet.direction} {bet.slug[-10:]}{suffix} | "
+              f"P&L ${bet.pnl:+.2f} | Total ${self.total_pnl:+.2f} | "
+              f"{self.wins}W/{self.losses}L")
 
     def _record_skip(self, slug: str, window_start: int, btc_price: float,
                      target_price: float, reason: str):
