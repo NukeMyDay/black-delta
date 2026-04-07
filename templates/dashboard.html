@@ -1436,8 +1436,8 @@ function renderTrades(windows) {
   const noEl = document.getElementById('no-trades');
   const moreWrap = document.getElementById('show-more-wrap');
 
-  // Show only resolved windows (have outcome), newest first
-  const resolved = (windows || []).filter(w => w.outcome).sort((a, b) => (b.window_start || 0) - (a.window_start || 0));
+  // Show all finalized windows (resolved + awaiting resolution), newest first
+  const resolved = (windows || []).filter(w => w.budget_spent > 0).sort((a, b) => (b.window_start || 0) - (a.window_start || 0));
   if (!resolved.length) { tbody.innerHTML = ''; noEl.style.display = 'block'; moreWrap.style.display = 'none'; return; }
   noEl.style.display = 'none';
   moreWrap.style.display = resolved.length > tradesShown ? '' : 'none';
@@ -1454,15 +1454,16 @@ function renderTrades(windows) {
     const dir = (w.net_direction || '').toUpperCase();
     const dirColor = dir === 'UP' ? 'var(--green)' : dir === 'DOWN' ? 'var(--red)' : 'var(--text)';
 
-    const correct = w.net_direction === w.outcome;
-    const resultLabel = correct ? 'CORRECT' : 'WRONG';
-    const resultColor = correct ? 'var(--green)' : 'var(--red)';
+    const hasOutcome = !!w.outcome;
+    const correct = hasOutcome && w.net_direction === w.outcome;
+    const resultLabel = hasOutcome ? (correct ? 'CORRECT' : 'WRONG') : 'PENDING';
+    const resultColor = hasOutcome ? (correct ? 'var(--green)' : 'var(--red)') : 'var(--orange)';
 
-    const winner = (w.outcome || '').toUpperCase();
+    const winner = hasOutcome ? (w.outcome || '').toUpperCase() : '--';
     const winnerColor = winner === 'UP' ? 'var(--green)' : winner === 'DOWN' ? 'var(--red)' : 'var(--text-dim)';
 
     const pnl = w.pnl || 0;
-    const pnlStr = pnl >= 0 ? '+$' + Number(pnl).toFixed(2) : '-$' + Number(Math.abs(pnl)).toFixed(2);
+    const pnlStr = hasOutcome ? (pnl >= 0 ? '+$' + Number(pnl).toFixed(2) : '-$' + Number(Math.abs(pnl)).toFixed(2)) : '--';
     const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
 
     const spent = w.budget_spent || 0;

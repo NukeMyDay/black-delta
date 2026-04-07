@@ -11,6 +11,7 @@ BTC price from Binance Futures WebSocket determines direction + conviction.
 Both sides bought in every window (minority = hedge + profit source).
 """
 
+import json
 import logging
 import os
 import threading
@@ -43,6 +44,7 @@ PHASE_EXPECTED_ORDERS = [2, 6, 8, 5]
 _midpoint_cache: dict[str, tuple[float, float]] = {}
 MIDPOINT_CACHE_TTL = 1.5  # seconds (reduced from 3s for fresher prices)
 MIDPOINT_CACHE_MAX = 50   # max entries before pruning
+PHASE_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "phase_state.json")
 
 
 def _get_midpoint_cached(token_id: str) -> float | None:
@@ -599,6 +601,66 @@ class PhaseStrategy:
                 log.info(f"Daily reset | Yesterday P&L: ${self._daily_pnl:+.2f}")
             self._daily_date = today
             self._daily_pnl = 0.0
+
+    # ------------------------------------------------------------------
+    #  State Persistence
+    # ------------------------------------------------------------------
+
+    def save_state(self):
+        """Persist completed windows and stats to disk."""
+        with self._lock:
+            data = {
+                "completed_windows": self.completed_windows[-200:],
+                "total_pnl": self.total_pnl,
+                "wins": self.wins,
+                "losses": self.losses,
+                "total_windows": self.total_windows,
+                "daily_pnl": self._daily_pnl,
+                "daily_date": self._daily_date,
+                "consecutive_losses": self._consecutive_losses,
+            }
+        try:
+            os.makedirs(os.path.dirname(PHASE_STATE_FILE), exist_ok=True)
+            tmp = PHASE_STATE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, PHASE_STATE_FILE)
+        except Exception as e:
+            print(f"[PHASE] Save failed: {e}")
+
+    def load_state(self):
+        """Restore completed windows and stats from disk."""
+        try:
+            with open(PHASE_STATE_FILE, "r") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+
+        with self._lock:
+            self.completed_windows = data.get("completed_windows", [])
+            self.total_windows = data.get("total_windows", 0)
+
+            # Recompute stats from actual window outcomes
+            self.wins = 0
+            self.losses = 0
+            self.total_pnl = 0.0
+            for w in self.completed_windows:
+                if not w.get("outcome"):
+                    continue
+                pnl = w.get("pnl", 0) or 0
+                self.total_pnl += pnl
+                if pnl >= 0:
+                    self.wins += 1
+                else:
+                    self.losses += 1
+
+            self._daily_pnl = data.get("daily_pnl", 0.0)
+            self._daily_date = data.get("daily_date", "")
+            self._consecutive_losses = data.get("consecutive_losses", 0)
+
+        total = self.wins + self.losses
+        print(f"[PHASE] State restored: {total} windows, {self.wins}W/{self.losses}L, "
+              f"P&L ${self.total_pnl:+.2f}")
 
     # ------------------------------------------------------------------
     #  Dashboard API

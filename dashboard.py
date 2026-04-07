@@ -157,6 +157,11 @@ def _state_saver_loop(interval: int = 60):
         except Exception as e:
             print(f"[STATE] Save failed: {e}")
         try:
+            if _phase:
+                _phase.save_state()
+        except Exception as e:
+            print(f"[PHASE] Save failed: {e}")
+        try:
             if _pulse:
                 _pulse.save_state()
         except Exception as e:
@@ -748,6 +753,7 @@ def main():
     phase = PhaseStrategy(btc_feed, executor, state)
     _phase = phase
     phase.paper_mode = state.sim_mode or not executor.enabled
+    phase.load_state()
     phase.start()
     phase_mode = "PAPER" if phase.paper_mode else "LIVE"
     print(f"[PHASE] Phase Strategy started ({phase_mode} mode)")
@@ -783,6 +789,8 @@ def main():
             print("[PULSE] Saving PULSE state...")
             _pulse.save_state()
         if _phase:
+            print("[PHASE] Saving phase state...")
+            _phase.save_state()
             print("[PHASE] Stopping phase strategy...")
             _phase.stop()
         if _follow_feed:
