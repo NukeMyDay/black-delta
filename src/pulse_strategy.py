@@ -218,6 +218,16 @@ class PulseStrategy:
     def _run_loop(self):
         """Main strategy loop — check every second, act at window boundaries."""
         print("[PULSE] Strategy loop started")
+        # Wait for BTC feed to connect before processing
+        for _ in range(30):
+            if self.btc_feed.btc_price > 0:
+                break
+            time.sleep(1)
+        if self.btc_feed.btc_price > 0:
+            print(f"[PULSE] BTC feed ready: ${self.btc_feed.btc_price:,.0f}")
+        else:
+            print("[PULSE] WARNING: BTC feed not connected after 30s")
+
         while self._running:
             try:
                 now = int(time.time())
@@ -450,6 +460,7 @@ class PulseStrategy:
     def _record_skip(self, slug: str, window_start: int, btc_price: float,
                      target_price: float, reason: str):
         """Record a skipped window."""
+        print(f"[PULSE] SKIP {slug[-10:]} | {reason} | BTC ${btc_price:.0f} target ${target_price:.0f}")
         bet = PulseBet(
             slug=slug, direction="--", btc_price=btc_price,
             target_price=target_price, entry_price=0, stake=0,

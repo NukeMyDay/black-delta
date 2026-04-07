@@ -296,9 +296,8 @@ class FollowFeed:
             "detected_at": time.time(),
         }
 
-        print(f"[FOLLOW] Trade detected: {trade['name'] or proxy[:10]} "
-              f"{trade['side']} {trade['outcome']} @ ${trade['price']:.2f} "
-              f"x{trade['size']:.1f} on {trade['slug']}")
+        # Logged to dashboard log viewer only (no stdout spam)
+
 
         if self.on_trade:
             try:
