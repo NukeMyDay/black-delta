@@ -47,6 +47,19 @@ AGGREGATOR_ABI = [
         "type": "function",
     },
     {
+        "inputs": [{"name": "_roundId", "type": "uint80"}],
+        "name": "getRoundData",
+        "outputs": [
+            {"name": "roundId", "type": "uint80"},
+            {"name": "answer", "type": "int256"},
+            {"name": "startedAt", "type": "uint256"},
+            {"name": "updatedAt", "type": "uint256"},
+            {"name": "answeredInRound", "type": "uint80"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
         "inputs": [],
         "name": "decimals",
         "outputs": [{"name": "", "type": "uint8"}],
@@ -118,6 +131,129 @@ def get_btc_price() -> float:
     return price
 
 
+def _decode_round(result) -> tuple[int, float, int]:
+    """Decode AggregatorV3 round data into (round_id, price, updated_at)."""
+    round_id = int(result[0])
+    answer = result[1]
+    updated_at = int(result[3])
+    price = answer / (10 ** _decimals)
+    return round_id, price, updated_at
+
+
+def _latest_round_data() -> tuple[int, float, int]:
+    """Fetch the latest Chainlink round."""
+    global _cache_price, _cache_ts, _cache_updated_at
+
+    now = time.time()
+    if now - _cache_ts < CACHE_TTL and _cache_price > 0:
+        try:
+            result = _contract.functions.latestRoundData().call()
+            round_id = int(result[0])
+            return round_id, _cache_price, _cache_updated_at
+        except Exception:
+            pass
+
+    if not _init():
+        return 0, _cache_price, _cache_updated_at
+
+    result = _contract.functions.latestRoundData().call()
+    round_id, price, updated_at = _decode_round(result)
+
+    with _cache_lock:
+        _cache_price = price
+        _cache_ts = now
+        _cache_updated_at = updated_at
+
+    return round_id, price, updated_at
+
+
+def _round_data(round_id: int) -> tuple[int, float, int]:
+    """Fetch a specific Chainlink round."""
+    if not _init():
+        return 0, 0.0, 0
+    if round_id <= 0:
+        return 0, 0.0, 0
+    result = _contract.functions.getRoundData(round_id).call()
+    return _decode_round(result)
+
+
+def get_btc_price_at_or_before_timestamp(target_ts: int,
+                                         max_round_lookback: int = 32) -> tuple[float, int]:
+    """Return the latest Chainlink price whose updatedAt is <= target_ts."""
+    try:
+        round_id, price, updated_at = _latest_round_data()
+    except Exception as e:
+        log.warning("Chainlink latest round fetch failed: %s", e)
+        if _cache_price > 0 and _cache_updated_at > 0 and _cache_updated_at <= target_ts:
+            return _cache_price, _cache_updated_at
+        return 0.0, 0
+
+    if price <= 0 or updated_at <= 0:
+        return 0.0, 0
+    if updated_at <= target_ts:
+        return price, updated_at
+
+    current_round = round_id
+    for _ in range(max_round_lookback):
+        current_round -= 1
+        if current_round <= 0:
+            break
+        try:
+            _, prev_price, prev_updated_at = _round_data(current_round)
+        except Exception as e:
+            log.debug("Chainlink historical round fetch failed (%s): %s", current_round, e)
+            break
+        if prev_price <= 0 or prev_updated_at <= 0:
+            break
+        if prev_updated_at <= target_ts:
+            return prev_price, prev_updated_at
+
+    log.warning("Chainlink could not locate round at/before ts=%s within %s rounds",
+                target_ts, max_round_lookback)
+    return 0.0, 0
+
+
+def get_btc_price_at_or_after_timestamp(target_ts: int,
+                                        max_round_lookback: int = 32) -> tuple[float, int]:
+    """Return the first Chainlink price whose updatedAt is >= target_ts."""
+    try:
+        round_id, price, updated_at = _latest_round_data()
+    except Exception as e:
+        log.warning("Chainlink latest round fetch failed: %s", e)
+        if _cache_price > 0 and _cache_updated_at >= target_ts:
+            return _cache_price, _cache_updated_at
+        return 0.0, 0
+
+    if price <= 0 or updated_at <= 0:
+        return 0.0, 0
+    if updated_at < target_ts:
+        return 0.0, 0
+
+    current_round = round_id
+    current_price = price
+    current_updated_at = updated_at
+    for _ in range(max_round_lookback):
+        prev_round = current_round - 1
+        if prev_round <= 0:
+            return current_price, current_updated_at
+        try:
+            _, prev_price, prev_updated_at = _round_data(prev_round)
+        except Exception as e:
+            log.debug("Chainlink historical round fetch failed (%s): %s", prev_round, e)
+            break
+        if prev_price <= 0 or prev_updated_at <= 0:
+            break
+        if prev_updated_at < target_ts:
+            return current_price, current_updated_at
+        current_round = prev_round
+        current_price = prev_price
+        current_updated_at = prev_updated_at
+
+    log.warning("Chainlink could not locate round at/after ts=%s within %s rounds",
+                target_ts, max_round_lookback)
+    return 0.0, 0
+
+
 def get_btc_price_with_timestamp() -> tuple[float, int]:
     """Get BTC/USD price and Chainlink's updatedAt timestamp.
 
@@ -133,18 +269,7 @@ def get_btc_price_with_timestamp() -> tuple[float, int]:
         return _cache_price, _cache_updated_at  # return stale if available
 
     try:
-        result = _contract.functions.latestRoundData().call()
-        # result = (roundId, answer, startedAt, updatedAt, answeredInRound)
-        answer = result[1]
-        updated_at = result[3]
-
-        price = answer / (10 ** _decimals)
-
-        with _cache_lock:
-            _cache_price = price
-            _cache_ts = now
-            _cache_updated_at = updated_at
-
+        _, price, updated_at = _latest_round_data()
         return price, updated_at
 
     except Exception as e:
