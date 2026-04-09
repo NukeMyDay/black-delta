@@ -535,6 +535,10 @@ class PhaseStrategy:
         if now - ws.last_order_time < ORDER_INTERVAL:
             return
 
+        # Debug: log every tick that passes rate limiting
+        if ws.order_count == 0 and int(elapsed) % 10 < 2:
+            _log(f"{ws.slug} TICK @ {elapsed:.0f}s | tokens={ws.up_token_id is not None}/{ws.down_token_id is not None} | btc_age={self.btc.price_age_ms:.0f}ms")
+
         # Skip if feed stale
         if self.btc.price_age_ms > 5000:
             _log(f"{ws.slug} SKIP: BTC feed stale ({self.btc.price_age_ms:.0f}ms)")
