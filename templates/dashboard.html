@@ -562,7 +562,7 @@ body {
     <div class="table-scroll">
       <table class="data-table" id="trades-table">
         <thead><tr>
-          <th>Time</th><th>Market</th><th>Direction</th><th>Result</th><th>Winner</th><th>P&L</th><th>ROI</th><th>Spent</th><th>Orders</th><th>BTC Move</th>
+          <th>Time</th><th>Market</th><th>Direction</th><th>Result</th><th>Winner</th><th>P&L</th><th>ROI</th><th>Spent</th><th>Orders</th><th>BTC Start</th>
         </tr></thead>
         <tbody id="trades-body"></tbody>
       </table>
@@ -1135,11 +1135,12 @@ function renderPositions(windows) {
     const slug = (w.slug || '').split('-').slice(0, 2).join(' ').toUpperCase();
     const slugDetail = (w.slug || '').split('-').slice(2).join('-');
     const bias = w.buy_bias != null ? Math.round(w.buy_bias * 100) + '%' : '--';
-    const phase = w.current_phase != null ? 'P' + (w.current_phase + 1) : '--';
+    const phase = w.state || (w.current_phase != null ? 'P' + (w.current_phase + 1) : '--');
     const spent = w.budget_spent != null ? '$' + Number(w.budget_spent).toFixed(0) : '--';
     const budget = w.max_budget != null ? '$' + Number(w.max_budget).toFixed(0) : '--';
     const orders = w.order_count || 0;
-    const btcMove = w.last_btc_move != null ? (w.last_btc_move >= 0 ? '+' : '') + Number(w.last_btc_move).toFixed(1) : '--';
+    const btcStart = w.btc_at_start > 0 ? '$' + Number(w.btc_at_start).toFixed(0) : '--';
+    const lowConf = w.low_confidence ? ' LC' : '';
     const borderClass = dir === 'UP' ? 'win-border' : dir === 'DOWN' ? 'lose-border' : 'pending-border';
 
     // Estimated P&L: if resolved NOW in current direction, winning shares pay $1
@@ -1151,14 +1152,14 @@ function renderPositions(windows) {
     return `<div class="pos-card ${borderClass}">
       <div class="pos-header">
         <span class="pos-slug">${slug} &nbsp;<span style="color:var(--text-dim);font-weight:400;font-size:10px">${slugDetail}</span></span>
-        <span class="pos-badge bet">${phase}</span>
+        <span class="pos-badge bet">${phase}${lowConf}</span>
       </div>
       <div class="pos-dir-big ${dirClass}">${dir || 'NEUTRAL'} &nbsp;<span style="font-size:14px;color:var(--text-dim);font-weight:400">${bias}</span> &nbsp;<span style="font-size:16px;font-weight:700;color:${estColor}">${estStr}</span></div>
       <div class="pos-progress"><div class="pos-progress-bar" style="width:${pct}%;background:${barColor}"></div></div>
       <div class="pos-stats">
         <span>Spent <strong>${spent} / ${budget}</strong></span>
         <span>Orders <strong>${orders}</strong></span>
-        <span>BTC <strong style="color:${w.last_btc_move >= 0 ? 'var(--green)' : 'var(--red)'}">${btcMove}</strong></span>
+        <span>BTC <strong>${btcStart}</strong></span>
       </div>
       <div class="pos-stats" style="margin-top:4px">
         <span>${el_mm}:${el_ss}s in</span>
@@ -1485,8 +1486,8 @@ function renderTrades(windows) {
     const roiColor = roi >= 0 ? 'var(--green)' : 'var(--red)';
 
     const orders = w.order_count || '--';
-    const btcMove = w.last_btc_move != null ? (w.last_btc_move >= 0 ? '+' : '') + Number(w.last_btc_move).toFixed(1) : '--';
-    const btcColor = (w.last_btc_move || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+    const stateStr = w.state || '--';
+    const btcStart = w.btc_at_start > 0 ? '$' + Number(w.btc_at_start).toFixed(0) : '--';
 
     return `<tr>
       <td>${time}</td>
@@ -1498,7 +1499,7 @@ function renderTrades(windows) {
       <td style="color:${roiColor}">${roiStr}</td>
       <td>${spentStr}</td>
       <td>${orders}</td>
-      <td style="color:${btcColor}">${btcMove}</td>
+      <td>${btcStart}</td>
     </tr>`;
   }).join('');
 }
