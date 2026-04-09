@@ -417,6 +417,8 @@ class PhaseStrategy:
                 now = time.time()
 
                 if self.state.kill_switch:
+                    if int(now) % 30 < 2:
+                        _log("BLOCKED: kill_switch is ON")
                     time.sleep(2)
                     continue
                 if now < self._paused_until:
@@ -426,10 +428,14 @@ class PhaseStrategy:
                 self._check_daily_reset()
 
                 if self._daily_pnl <= -self.daily_loss_limit:
+                    if int(now) % 60 < 2:
+                        _log(f"BLOCKED: daily loss limit (${self._daily_pnl:.2f})")
                     time.sleep(60)
                     continue
 
                 if not self.btc.is_connected or self.btc.btc_price == 0:
+                    if int(now) % 10 < 2:
+                        _log(f"BLOCKED: BTC feed (connected={self.btc.is_connected}, price={self.btc.btc_price})")
                     time.sleep(1)
                     continue
 
