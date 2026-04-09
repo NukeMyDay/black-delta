@@ -23,11 +23,15 @@ import logging
 import os
 import threading
 import time
+import traceback
 from collections import deque
 from datetime import datetime, timezone
 
 from src.binance_ws import BinancePriceFeed
-from src.chainlink import get_btc_price as chainlink_btc_price, get_btc_price_with_timestamp
+from src.chainlink import (
+    get_btc_price_at_or_after_timestamp,
+    get_btc_price_at_or_before_timestamp,
+)
 from src.polymarket import (
     fetch_market, fetch_midpoint, parse_market_data,
     get_current_event_slug,
@@ -318,16 +322,16 @@ class PulseStrategy:
 
     def _run_loop(self):
         """Main strategy loop — check every second, act at window boundaries."""
-        print("[PULSE] Strategy loop started")
+        print("[PULSE] Strategy loop started", flush=True)
         # Wait for BTC feed to connect before processing
         for _ in range(30):
             if self.btc_feed.btc_price > 0:
                 break
             time.sleep(1)
         if self.btc_feed.btc_price > 0:
-            print(f"[PULSE] BTC feed ready: ${self.btc_feed.btc_price:,.0f}")
+            print(f"[PULSE] BTC feed ready: ${self.btc_feed.btc_price:,.0f}", flush=True)
         else:
-            print("[PULSE] WARNING: BTC feed not connected after 30s")
+            print("[PULSE] WARNING: BTC feed not connected after 30s", flush=True)
 
         while self._running:
             try:
@@ -341,7 +345,7 @@ class PulseStrategy:
                     # Try Chainlink (Polymarket's resolution oracle) first,
                     # fall back to Binance if RPC is unreachable.
                     try:
-                        cl_price = chainlink_btc_price()
+                        cl_price, _ = get_btc_price_at_or_before_timestamp(window_start)
                     except Exception:
                         cl_price = 0.0
                     if cl_price > 0:
@@ -368,6 +372,8 @@ class PulseStrategy:
 
                 time.sleep(1)
             except Exception as e:
+                print(f"[PULSE] loop error: {type(e).__name__}: {e}", flush=True)
+                print(traceback.format_exc(), flush=True)
                 log.error("PULSE loop error: %s", e)
                 time.sleep(5)
 
@@ -390,7 +396,7 @@ class PulseStrategy:
         if target_price <= 0:
             # Missed the snapshot — try Chainlink now as fallback
             try:
-                target_price = chainlink_btc_price()
+                target_price, _ = get_btc_price_at_or_before_timestamp(window_start)
             except Exception:
                 target_price = 0.0
             if target_price > 0:
@@ -526,46 +532,65 @@ class PulseStrategy:
     def _resolve_completed(self):
         """Resolve bets from completed windows.
 
-        Primary resolution: Chainlink oracle price with timestamp verification.
-        Only trusts the price if Chainlink's updatedAt >= window_end (ensuring
-        we have a post-window price, same data Polymarket uses).
-        Fallback: Polymarket API settlement check.
+        Primary: Polymarket settled outcome (ground truth — determines actual W/L).
+        Wait ~2 min for settlement, then poll every tick.
+        Fallback: Chainlink oracle comparison (if Polymarket API slow after 5 min).
+        Void after 10 minutes if neither resolves.
         """
         now = time.time()
         resolved_slugs = []
 
         for slug, bet in list(self.pending_bets.items()):
             window_end = bet.window_start + 300
-            # Wait at least 30s after window end — Chainlink updates ~every 27s
-            if now < window_end + 30:
+
+            # Wait at least 120s after window end for Polymarket to settle
+            if now < window_end + 120:
                 continue
 
             winner = None
 
-            # Method 1: Chainlink oracle with timestamp verification
-            # Only trust the price if the oracle updated AFTER the window ended
-            if bet.target_price > 0:
+            # Method 1: Polymarket settled outcome (GROUND TRUTH)
+            # After resolution, winning outcome price = $1.00.
+            # This is what actually determines if the bet wins or loses.
+            from src.polymarket import fetch_market_outcome
+            try:
+                winner = fetch_market_outcome(slug)
+            except Exception:
+                winner = None
+
+            # Verification: when Polymarket resolves, also check Chainlink to
+            # log agreement/disagreement (useful for monitoring oracle accuracy)
+            if winner and bet.target_price > 0:
                 try:
-                    end_price, updated_at = get_btc_price_with_timestamp()
+                    end_price, updated_at = get_btc_price_at_or_after_timestamp(window_end)
+                    if end_price > 0 and updated_at >= window_end:
+                        cl_winner = "up" if end_price > bet.target_price else "down"
+                        if cl_winner != winner.lower():
+                            log.warning(
+                                "Resolution mismatch %s: Polymarket=%s Chainlink=%s "
+                                "(end=%.2f vs target=%.2f)",
+                                slug, winner, cl_winner, end_price, bet.target_price,
+                            )
+                        else:
+                            log.debug("Resolution verified %s: both=%s", slug, winner)
+                except Exception:
+                    pass
+
+            # Method 2: Chainlink fallback (only if Polymarket hasn't settled after 5 min)
+            if not winner and bet.target_price > 0 and now > window_end + 300:
+                try:
+                    end_price, updated_at = get_btc_price_at_or_after_timestamp(window_end)
                 except Exception:
                     end_price, updated_at = 0.0, 0
                 if end_price > 0 and updated_at >= window_end:
-                    # Polymarket "Up" = strictly above target. Equal = Down.
-                    if end_price > bet.target_price:
-                        winner = "up"
-                    else:
-                        winner = "down"
-
-            # Method 2: Polymarket API (fallback — checks settled prices)
-            if not winner:
-                from src.polymarket import fetch_market_outcome
-                try:
-                    winner = fetch_market_outcome(slug)
-                except Exception:
-                    winner = None
+                    winner = "up" if end_price > bet.target_price else "down"
+                    log.warning(
+                        "Chainlink fallback for %s: %s (Polymarket not settled after 5min, "
+                        "end=%.2f vs target=%.2f)", slug, winner, end_price, bet.target_price,
+                    )
 
             if not winner:
-                # If still no resolution after 10 minutes, void the bet
+                # Void after 10 minutes
                 if now > window_end + 600:
                     self._record_void(bet)
                     resolved_slugs.append(slug)
@@ -632,4 +657,3 @@ class PulseStrategy:
         with self._lock:
             self.bets.append(bet)
             self.skips += 1
-

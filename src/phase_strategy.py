@@ -21,6 +21,7 @@ import math
 import os
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 
 from src.binance_ws import BinancePriceFeed
@@ -38,7 +39,7 @@ log = logging.getLogger("phase_strategy")
 
 def _log(msg: str):
     """Print to stdout so dashboard log viewer and docker logs capture it."""
-    print(f"[PHASE] {msg}")
+    print(f"[PHASE] {msg}", flush=True)
 
 # ---------------------------------------------------------------------------
 #  Constants
@@ -161,6 +162,7 @@ class WindowState:
         # --- Order tracking ---
         self.orders: list[dict] = []
         self.order_count: int = 0
+        self.spend_credit: float = 0.0
 
         # --- BTC reference ---
         self.btc_at_start: float = 0.0
@@ -450,7 +452,11 @@ class PhaseStrategy:
                             to_process.append(ws)
 
                 for ws in to_process:
-                    self._process_window(ws)
+                    try:
+                        self._process_window(ws)
+                    except Exception as e:
+                        _log(f"{ws.slug} PROCESS ERROR: {type(e).__name__}: {e}")
+                        _log(traceback.format_exc())
 
                 for slug in expired:
                     with self._lock:
@@ -459,11 +465,16 @@ class PhaseStrategy:
                         ws.active = False
                         self._finalize_window(ws)
 
+                check_start = time.time()
                 self._check_new_windows()
+                check_ms = (time.time() - check_start) * 1000
+                if check_ms > 1500:
+                    _log(f"_check_new_windows slow: {check_ms:.0f}ms")
                 time.sleep(1)
 
             except Exception as e:
-                _log(f"PhaseStrategy error: {e}")
+                _log(f"PhaseStrategy error: {type(e).__name__}: {e}")
+                _log(traceback.format_exc())
                 time.sleep(5)
 
     # ------------------------------------------------------------------
@@ -493,12 +504,15 @@ class PhaseStrategy:
 
         try:
             ws.target_price, _ = get_btc_price_at_or_before_timestamp(window_start)
-        except Exception:
+        except Exception as e:
+            _log(f"{slug} target lookup failed: {type(e).__name__}: {e}")
             ws.target_price = 0.0
         if ws.target_price <= 0:
             ws.target_price = ws.btc_at_start
 
+        market_start = time.time()
         market = fetch_market(slug)
+        market_ms = (time.time() - market_start) * 1000
         if not market:
             _log(f"Market not yet available: {slug}")
             return
@@ -522,7 +536,7 @@ class PhaseStrategy:
             self.total_windows += 1
         _log(
             f"New window: {slug} | BTC=${ws.btc_at_start:.0f} | "
-            f"Budget=${budget:.0f}"
+            f"Budget=${budget:.0f} | fetch_market={market_ms:.0f}ms"
         )
 
     # ------------------------------------------------------------------
@@ -553,8 +567,12 @@ class PhaseStrategy:
         proc_start = time.time()
 
         # --- 1. Observe market state ---
+        mid_start = time.time()
         up_mid = _get_midpoint_cached(ws.up_token_id) if ws.up_token_id else None
         down_mid = _get_midpoint_cached(ws.down_token_id) if ws.down_token_id else None
+        mid_ms = (time.time() - mid_start) * 1000
+        if mid_ms > 1500:
+            _log(f"{ws.slug} midpoint fetch slow: {mid_ms:.0f}ms")
 
         if up_mid is None or down_mid is None:
             _log(f"{ws.slug} SKIP: midpoints unavailable (up_token={ws.up_token_id is not None}, down_token={ws.down_token_id is not None}, up_mid={up_mid}, down_mid={down_mid})")
@@ -568,6 +586,11 @@ class PhaseStrategy:
         dominant_mid = max(up_mid, down_mid)
 
         # --- 2. Compute signals ---
+        # Update bias/flip timers every tick, not only after orders.
+        # Otherwise a fresh window can never become "stable" before its first order,
+        # which traps the state machine in DISCOVERY.
+        ws.update_bias_stability()
+
         direction_clear = (
             mid_imbalance >= DIRECTION_CLEAR_IMBALANCE or
             mid_imbalance <= -DIRECTION_CLEAR_IMBALANCE or
@@ -575,7 +598,10 @@ class PhaseStrategy:
             up_mid <= DIRECTION_CLEAR_UP_LOW
         )
         bias_stable = ws.bias_stable_since_s >= BIAS_STABILITY_MIN_S
-        no_recent_flip = (elapsed - ws.last_flip_elapsed_s) >= BIAS_STABILITY_MIN_S
+        no_recent_flip = (
+            ws.last_flip_elapsed_s == float("inf") or
+            (elapsed - ws.last_flip_elapsed_s) >= BIAS_STABILITY_MIN_S
+        )
 
         # Low confidence flag
         ws.low_confidence = (
@@ -758,24 +784,39 @@ class PhaseStrategy:
         remaining_ticks = remaining_s / ORDER_INTERVAL
         per_tick_base = budget_available / max(remaining_ticks, 1.0)
 
-        # Scale by magnitude
-        order_budget = per_tick_base * (0.3 + 0.7 * magnitude)
-        order_budget = min(order_budget, budget_available, ws.budget_remaining)
+        # Scale by magnitude and accumulate spend credit over time.
+        # Without carry-over, DISCOVERY's bilateral split plus $0.50 min-order
+        # threshold prevents any early orders from ever firing.
+        tick_budget = per_tick_base * (0.3 + 0.7 * magnitude)
+        ws.spend_credit = min(
+            budget_available,
+            ws.spend_credit + tick_budget,
+        )
+
+        min_action_budget = 1.00 if ws.state == "DISCOVERY" else 0.50
+        if ws.spend_credit < min_action_budget:
+            return
+
+        order_budget = min(ws.spend_credit, budget_available, ws.budget_remaining)
 
         if order_budget < 0.50:
             return
 
         # --- State-specific execution mode ---
+        spent = 0.0
 
         if ws.state == "DISCOVERY":
-            self._execute_discovery(ws, delta_bias, order_budget,
-                                    up_mid, down_mid, implied_sum)
+            spent = self._execute_discovery(ws, delta_bias, order_budget,
+                                            up_mid, down_mid, implied_sum)
         elif ws.state == "REINFORCEMENT":
-            self._execute_reinforcement(ws, delta_bias, order_budget,
-                                        up_mid, down_mid, implied_sum, dominant_mid)
+            spent = self._execute_reinforcement(ws, delta_bias, order_budget,
+                                                up_mid, down_mid, implied_sum, dominant_mid)
         elif ws.state == "HARVEST":
-            self._execute_harvest(ws, delta_bias, order_budget,
-                                  up_mid, down_mid, dominant_mid)
+            spent = self._execute_harvest(ws, delta_bias, order_budget,
+                                          up_mid, down_mid, dominant_mid)
+
+        if spent > 0:
+            ws.spend_credit = max(0.0, ws.spend_credit - spent)
 
     def _execute_discovery(self, ws: WindowState, delta_bias: float,
                            order_budget: float, up_mid: float,
@@ -812,16 +853,15 @@ class PhaseStrategy:
         up_usd = order_budget * up_pct
         down_usd = order_budget * (1.0 - up_pct)
 
-        placed = False
+        spent = 0.0
         if up_usd >= 0.50 and ws.up_token_id:
-            if self._place_order(ws, ws.up_token_id, "up", up_usd, up_mid):
-                placed = True
+            spent += self._place_order(ws, ws.up_token_id, "up", up_usd, up_mid)
         if down_usd >= 0.50 and ws.down_token_id:
-            if self._place_order(ws, ws.down_token_id, "down", down_usd, down_mid):
-                placed = True
+            spent += self._place_order(ws, ws.down_token_id, "down", down_usd, down_mid)
 
-        if placed:
+        if spent > 0:
             ws.last_order_time = time.time()
+        return spent
 
     def _execute_reinforcement(self, ws: WindowState, delta_bias: float,
                                 order_budget: float, up_mid: float,
@@ -859,16 +899,15 @@ class PhaseStrategy:
         up_usd = order_budget * up_pct
         down_usd = order_budget * (1.0 - up_pct)
 
-        placed = False
+        spent = 0.0
         if up_usd >= 0.50 and ws.up_token_id:
-            if self._place_order(ws, ws.up_token_id, "up", up_usd, up_mid):
-                placed = True
+            spent += self._place_order(ws, ws.up_token_id, "up", up_usd, up_mid)
         if down_usd >= 0.50 and ws.down_token_id:
-            if self._place_order(ws, ws.down_token_id, "down", down_usd, down_mid):
-                placed = True
+            spent += self._place_order(ws, ws.down_token_id, "down", down_usd, down_mid)
 
-        if placed:
+        if spent > 0:
             ws.last_order_time = time.time()
+        return spent
 
     def _execute_harvest(self, ws: WindowState, delta_bias: float,
                          order_budget: float, up_mid: float,
@@ -897,38 +936,37 @@ class PhaseStrategy:
             down_usd = order_budget * dominant_pct
             up_usd = order_budget * (1.0 - dominant_pct)
 
-        placed = False
+        spent = 0.0
         if up_usd >= 0.50 and ws.up_token_id:
-            if self._place_order(ws, ws.up_token_id, "up", up_usd, up_mid):
-                placed = True
+            spent += self._place_order(ws, ws.up_token_id, "up", up_usd, up_mid)
         if down_usd >= 0.50 and ws.down_token_id:
-            if self._place_order(ws, ws.down_token_id, "down", down_usd, down_mid):
-                placed = True
+            spent += self._place_order(ws, ws.down_token_id, "down", down_usd, down_mid)
 
-        if placed:
+        if spent > 0:
             ws.last_order_time = time.time()
+        return spent
 
     # ------------------------------------------------------------------
     #  Order Placement
     # ------------------------------------------------------------------
 
     def _place_order(self, ws: WindowState, token_id: str, direction: str,
-                     amount_usd: float, mid: float) -> bool:
-        """Place a single order. Returns True if recorded successfully."""
+                     amount_usd: float, mid: float) -> float:
+        """Place a single order. Returns actual USD recorded, else 0.0."""
         # No upper mid rejection -- penny collecting is allowed (spec v2)
         if mid < 0.01:
-            return False
+            return 0.0
 
         # Budget guard
         if not ws.can_spend(amount_usd):
             amount_usd = ws.get_budget_cap() - ws.inventory_total_usdc
             if amount_usd < 0.50:
-                return False
+                return 0.0
 
         # Cap to executor limit
         amount_usd = min(amount_usd, self.executor.max_bet_usd)
         if amount_usd < 0.50:
-            return False
+            return 0.0
 
         # Price cap: allow up to mid + 0.03, or 0.99 for penny collecting
         if mid >= PENNY_THRESHOLD:
@@ -946,7 +984,7 @@ class PhaseStrategy:
                 f"{'LOW_CONF' if ws.low_confidence else ''}"
             )
             ws.record_order(direction, amount_usd, sim_shares, sim_price, ws.state)
-            return True
+            return amount_usd
 
         # Live order
         clob_start = time.time()
@@ -971,13 +1009,13 @@ class PhaseStrategy:
                 f"${amount_usd:.2f} @ ${fill_price:.3f} ({live_shares:.1f}sh) | "
                 f"order={resp['orderID'][:12]}... CLOB={clob_ms:.0f}ms"
             )
-            return True
+            return amount_usd
 
         _log(
             f"Order failed: {ws.slug} {direction} ${amount_usd:.2f} "
             f"CLOB={clob_ms:.0f}ms"
         )
-        return False
+        return 0.0
 
     # ------------------------------------------------------------------
     #  Window Finalization & Resolution
