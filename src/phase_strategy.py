@@ -35,6 +35,11 @@ from src.polymarket import (
 
 log = logging.getLogger("phase_strategy")
 
+
+def _log(msg: str):
+    """Print to stdout so dashboard log viewer and docker logs capture it."""
+    print(f"[PHASE] {msg}")
+
 # ---------------------------------------------------------------------------
 #  Constants
 # ---------------------------------------------------------------------------
@@ -289,7 +294,7 @@ class WindowState:
         if old_state == "REINFORCEMENT" and new_state == "DISCOVERY":
             self._rebalance_remaining = REBALANCE_ORDERS
 
-        log.info(
+        _log(
             f"{self.slug} | {old_state} -> {new_state} @ {self.elapsed:.0f}s | "
             f"bias={self.inventory_bias:.3f} flips={self.flip_count} "
             f"struct_flips={self.structural_flip_count}"
@@ -395,7 +400,7 @@ class PhaseStrategy:
         )
         self._thread.start()
         mode = "PAPER" if self.paper_mode else "LIVE"
-        log.info(f"PhaseStrategy v2 started ({mode}, max ${self.max_budget}/window)")
+        _log(f"PhaseStrategy v2 started ({mode}, max ${self.max_budget}/window)")
 
     def stop(self):
         self._running = False
@@ -452,7 +457,7 @@ class PhaseStrategy:
                 time.sleep(1)
 
             except Exception as e:
-                log.error(f"PhaseStrategy error: {e}", exc_info=True)
+                _log(f"PhaseStrategy error: {e}")
                 time.sleep(5)
 
     # ------------------------------------------------------------------
@@ -489,12 +494,12 @@ class PhaseStrategy:
 
         market = fetch_market(slug)
         if not market:
-            log.debug(f"Market not yet available: {slug}")
+            _log(f"Market not yet available: {slug}")
             return
 
         md = parse_market_data(market)
         if not md:
-            log.warning(f"Could not parse market: {slug}")
+            _log(f"Could not parse market: {slug}")
             return
 
         ws.up_token_id = md.get("up_token_id")
@@ -509,7 +514,7 @@ class PhaseStrategy:
         with self._lock:
             self.active_windows[slug] = ws
             self.total_windows += 1
-        log.info(
+        _log(
             f"New window: {slug} | BTC=${ws.btc_at_start:.0f} | "
             f"Budget=${budget:.0f}"
         )
@@ -532,6 +537,7 @@ class PhaseStrategy:
 
         # Skip if feed stale
         if self.btc.price_age_ms > 5000:
+            _log(f"{ws.slug} SKIP: BTC feed stale ({self.btc.price_age_ms:.0f}ms)")
             return
 
         proc_start = time.time()
@@ -541,8 +547,10 @@ class PhaseStrategy:
         down_mid = _get_midpoint_cached(ws.down_token_id) if ws.down_token_id else None
 
         if up_mid is None or down_mid is None:
+            _log(f"{ws.slug} SKIP: midpoints unavailable (up_token={ws.up_token_id is not None}, down_token={ws.down_token_id is not None}, up_mid={up_mid}, down_mid={down_mid})")
             return
         if up_mid < 0.01 or down_mid < 0.01:
+            _log(f"{ws.slug} SKIP: midpoints too low (up={up_mid}, down={down_mid})")
             return
 
         implied_sum = up_mid + down_mid
@@ -921,7 +929,7 @@ class PhaseStrategy:
         if self.paper_mode:
             sim_price = min(mid + 0.02, 0.99)
             sim_shares = amount_usd / sim_price
-            log.info(
+            _log(
                 f"[PAPER] {ws.slug} {ws.state} | {direction.upper()} "
                 f"${amount_usd:.2f} @ ${sim_price:.3f} ({sim_shares:.1f}sh) | "
                 f"mid={mid:.3f} bias={ws.inventory_bias:.3f} "
@@ -948,14 +956,14 @@ class PhaseStrategy:
             fill_price = max_price
             live_shares = amount_usd / fill_price
             ws.record_order(direction, amount_usd, live_shares, fill_price, ws.state)
-            log.info(
+            _log(
                 f"[LIVE] {ws.slug} {ws.state} | {direction.upper()} "
                 f"${amount_usd:.2f} @ ${fill_price:.3f} ({live_shares:.1f}sh) | "
                 f"order={resp['orderID'][:12]}... CLOB={clob_ms:.0f}ms"
             )
             return True
 
-        log.warning(
+        _log(
             f"Order failed: {ws.slug} {direction} ${amount_usd:.2f} "
             f"CLOB={clob_ms:.0f}ms"
         )
@@ -980,7 +988,7 @@ class PhaseStrategy:
         self._append_trade_log(full_record)
 
         states_visited = [s for _, s in ws._state_history]
-        log.info(
+        _log(
             f"Window closed: {ws.slug} | Spent: ${ws.inventory_total_usdc:.2f}/{ws.max_budget:.0f} | "
             f"Dir: {ws.net_direction} (bias={ws.inventory_bias:.3f}) | "
             f"Orders: {ws.order_count} | States: {' -> '.join(states_visited)} | "
@@ -1004,7 +1012,7 @@ class PhaseStrategy:
             from src.polymarket import fetch_market_outcome
             outcome = fetch_market_outcome(slug)
         except Exception as e:
-            log.debug(f"Polymarket resolution error for {slug}: {e}")
+            _log(f"Polymarket resolution error for {slug}: {e}")
 
         # Cross-check Chainlink
         if outcome:
@@ -1022,7 +1030,7 @@ class PhaseStrategy:
                     if end_price > 0 and updated_at >= window_end:
                         cl_winner = "up" if end_price > target_price else "down"
                         if cl_winner != outcome.lower():
-                            log.warning(
+                            _log(
                                 f"Resolution mismatch {slug}: Polymarket={outcome} "
                                 f"Chainlink={cl_winner} (end={end_price:.2f} vs target={target_price:.2f})"
                             )
@@ -1044,19 +1052,19 @@ class PhaseStrategy:
                     end_price, updated_at = get_btc_price_at_or_after_timestamp(window_end)
                     if end_price > 0 and updated_at >= window_end:
                         outcome = "up" if end_price > target_price else "down"
-                        log.warning(
+                        _log(
                             f"Chainlink fallback for {slug}: {outcome} "
                             f"(end={end_price:.2f} vs target={target_price:.2f})"
                         )
                 except Exception as e:
-                    log.debug(f"Chainlink resolution error for {slug}: {e}")
+                    _log(f"Chainlink resolution error for {slug}: {e}")
 
         if not outcome:
             if attempt < 10:
                 threading.Timer(30, self._resolve_window,
                                 args=[slug, attempt + 1]).start()
             else:
-                log.warning(f"Could not resolve {slug} after {attempt+1} attempts -- voiding")
+                _log(f"Could not resolve {slug} after {attempt+1} attempts -- voiding")
                 with self._lock:
                     for summary in self.completed_windows:
                         if summary["slug"] == slug and not summary.get("outcome"):
@@ -1092,14 +1100,14 @@ class PhaseStrategy:
                     self._consecutive_losses += 1
                     if self._consecutive_losses >= self.consecutive_loss_pause:
                         self._paused_until = time.time() + 1800
-                        log.warning(
+                        _log(
                             f"{self._consecutive_losses} consecutive losses "
                             f"-- pausing 30 min"
                         )
 
                 correct = summary["net_direction"] == outcome
                 self._resolving_slugs.discard(slug)
-                log.info(
+                _log(
                     f"RESOLVED: {slug} -> {outcome} | "
                     f"{'CORRECT' if correct else 'WRONG'} | "
                     f"Payout: ${payout:.2f} - Cost: ${total_spent:.2f} = "
@@ -1120,7 +1128,7 @@ class PhaseStrategy:
             with open(PHASE_TRADE_LOG, "a") as f:
                 f.write(json.dumps(record) + "\n")
         except Exception as e:
-            log.warning(f"Trade log append failed: {e}")
+            _log(f"Trade log append failed: {e}")
 
     def _update_trade_log_resolution(self, slug: str, outcome: str, pnl: float):
         """Update outcome/pnl for a window in the JSONL trade log.
@@ -1155,7 +1163,7 @@ class PhaseStrategy:
                     f.write("\n".join(lines) + "\n")
                 os.replace(tmp, PHASE_TRADE_LOG)
         except Exception as e:
-            log.warning(f"Trade log resolution update failed: {e}")
+            _log(f"Trade log resolution update failed: {e}")
 
     def load_trade_log(self) -> list[dict]:
         """Load all windows from the JSONL trade log. Returns list of records."""
@@ -1172,8 +1180,35 @@ class PhaseStrategy:
                         except json.JSONDecodeError:
                             continue
         except Exception as e:
-            log.warning(f"Trade log load failed: {e}")
+            _log(f"Trade log load failed: {e}")
         return records
+
+    # ------------------------------------------------------------------
+    #  Reset (purge all history)
+    # ------------------------------------------------------------------
+
+    def reset_stats(self):
+        """Purge all phase history — completed windows, stats, trade log."""
+        with self._lock:
+            self.completed_windows.clear()
+            self.total_pnl = 0.0
+            self.wins = 0
+            self.losses = 0
+            self.total_windows = 0
+            self._daily_pnl = 0.0
+            self._daily_date = ""
+            self._consecutive_losses = 0
+            self._paused_until = 0.0
+
+        # Delete persistent files
+        for path in (PHASE_STATE_FILE, PHASE_TRADE_LOG):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                _log(f"Reset: could not delete {path}: {e}")
+
+        _log("Phase stats and trade log purged")
 
     # ------------------------------------------------------------------
     #  Helpers
@@ -1183,7 +1218,7 @@ class PhaseStrategy:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if today != self._daily_date:
             if self._daily_date:
-                log.info(f"Daily reset | Yesterday P&L: ${self._daily_pnl:+.2f}")
+                _log(f"Daily reset | Yesterday P&L: ${self._daily_pnl:+.2f}")
             self._daily_date = today
             self._daily_pnl = 0.0
 
