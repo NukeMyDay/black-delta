@@ -45,9 +45,9 @@ PULSE_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "pulse_
 SLIPPAGE = 0.02           # $0.02 assumed FAK slippage
 ENTRY_MIN = 0.50          # Minimum entry price (filter noise)
 ENTRY_MAX = 0.70          # Maximum entry price (filter low payout)
-MIN_DISTANCE = 3.0        # Minimum |BTC - target| in USD
-MIN_EDGE = 5.0            # Minimum edge % (effective_wr - implied_prob) to bet
-KELLY_FRACTION = 1 / 8    # Conservative Kelly fraction
+MIN_DISTANCE = 30.0       # Minimum |BTC - target| in USD (was 3.0; 10-30 range is toxic)
+MIN_EDGE = 1.0            # Minimum edge % (was 5.0; lowered because calibrated WR is honest)
+KELLY_FRACTION = 1 / 16   # Conservative Kelly fraction (was 1/8; halved for safety)
 MIN_STAKE = 1.0           # Minimum bet size
 DEFAULT_CAPITAL = 1000.0  # Paper trading capital
 DEFAULT_MAX_BET = 50.0    # Default max bet cap in USD
@@ -473,9 +473,14 @@ class PulseStrategy:
         #      $0.50 → +5%, $0.60 → +2.5%, $0.70 → 0%
         entry_boost = max(0, (ENTRY_MAX - entry_price) / (ENTRY_MAX - ENTRY_MIN)) * ENTRY_BOOST_MAX
         #    - Distance boost: bigger BTC move = more momentum confirmation
-        #      $50+ → +3%, $25 → +1.5%, $3 → ~0.2%
+        #      $50+ -> +3%, $25 -> +1.5%, $3 -> ~0.2%
         dist_boost = min(abs_distance / DIST_BOOST_FULL, 1.0) * DIST_BOOST_MAX
-        effective_wr = BASE_WIN_RATE + entry_boost + dist_boost
+        raw_wr = BASE_WIN_RATE + entry_boost + dist_boost
+
+        # Calibration: shrink toward 55% (actual WR was 56.4% vs predicted 68%)
+        # Then hard-clip to [0.52, 0.60] to prevent overconfidence
+        effective_wr = 0.55 + (raw_wr - 0.65) * 0.3
+        effective_wr = min(max(effective_wr, 0.52), 0.60)
 
         # 8. Kelly sizing with dynamic WR
         # Available capital = total minus stakes already committed to pending bets
