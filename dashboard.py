@@ -665,6 +665,128 @@ def api_analysis_export(request: Request):
     return JSONResponse({"error": "type must be 'trades' or 'windows'"}, status_code=400)
 
 
+# --- Phase Strategy Endpoints ---
+
+@app.get("/api/phase/history")
+def api_phase_history():
+    """Return ALL completed windows from the persistent trade log.
+
+    Unlike the dashboard endpoint (last 20), this returns the full history.
+    """
+    if not _phase:
+        return JSONResponse({"error": "phase strategy not initialized"})
+    records = _phase.load_trade_log()
+    # Strip orders from history view (keep it lightweight for the dashboard)
+    windows = []
+    for r in records:
+        w = {k: v for k, v in r.items() if k != "orders"}
+        w["order_count"] = len(r.get("orders", []))
+        windows.append(w)
+    total_pnl = sum(w.get("pnl", 0) or 0 for w in windows if w.get("outcome"))
+    wins = sum(1 for w in windows if (w.get("pnl") or 0) >= 0 and w.get("outcome") and w["outcome"] != "void")
+    losses = sum(1 for w in windows if (w.get("pnl") or 0) < 0 and w.get("outcome"))
+    return JSONResponse({
+        "total_windows": len(windows),
+        "resolved": wins + losses,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(wins / max(wins + losses, 1) * 100, 1),
+        "total_pnl": round(total_pnl, 2),
+        "windows": windows,
+    })
+
+
+@app.get("/api/phase/export")
+def api_phase_export(request: Request):
+    """Export phase strategy data as CSV.
+
+    ?type=windows  -> one row per window (default)
+    ?type=orders   -> one row per individual order, with window slug
+    ?format=json   -> JSON instead of CSV
+    """
+    if not _phase:
+        return JSONResponse({"error": "phase strategy not initialized"})
+
+    export_type = request.query_params.get("type", "windows")
+    fmt = request.query_params.get("format", "csv")
+    records = _phase.load_trade_log()
+
+    if export_type == "orders":
+        # Flatten: one row per order with window context
+        rows = []
+        for r in records:
+            for order in r.get("orders", []):
+                rows.append({
+                    "slug": r.get("slug", ""),
+                    "window_start": r.get("window_start", ""),
+                    "window_state": r.get("state", ""),
+                    "window_outcome": r.get("outcome", ""),
+                    "window_pnl": r.get("pnl", ""),
+                    "window_net_direction": r.get("net_direction", ""),
+                    "window_buy_bias": r.get("buy_bias", ""),
+                    "order_direction": order.get("direction", ""),
+                    "order_usdc": order.get("usdc", ""),
+                    "order_shares": order.get("shares", ""),
+                    "order_price": order.get("price", ""),
+                    "order_state": order.get("state", ""),
+                    "order_elapsed_s": order.get("elapsed", ""),
+                    "order_time": order.get("time", ""),
+                })
+
+        if fmt == "json":
+            return Response(
+                json.dumps(rows, indent=2),
+                media_type="application/json",
+                headers={"Content-Disposition": "attachment; filename=phase_orders.json"},
+            )
+
+        if not rows:
+            return JSONResponse({"error": "no orders found"}, status_code=404)
+
+        buf = io.StringIO()
+        fields = list(rows[0].keys())
+        writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(
+            buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=phase_orders.csv"},
+        )
+
+    else:
+        # Window-level summary (no individual orders)
+        rows = []
+        for r in records:
+            row = {k: v for k, v in r.items() if k not in ("orders", "state_history")}
+            row["order_count"] = len(r.get("orders", []))
+            # Flatten state_history to string
+            history = r.get("state_history", [])
+            row["state_path"] = " -> ".join(s for _, s in history) if history else ""
+            rows.append(row)
+
+        if fmt == "json":
+            return Response(
+                json.dumps(rows, indent=2),
+                media_type="application/json",
+                headers={"Content-Disposition": "attachment; filename=phase_windows.json"},
+            )
+
+        if not rows:
+            return JSONResponse({"error": "no windows found"}, status_code=404)
+
+        buf = io.StringIO()
+        fields = list(rows[0].keys())
+        writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(
+            buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=phase_windows.csv"},
+        )
+
+
 # ==================================================================
 #  Startup
 # ==================================================================

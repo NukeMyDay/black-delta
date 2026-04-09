@@ -1076,16 +1076,28 @@ function updateModeBtn(kill_switch, sim_mode) {
     b.className = 'mode-btn';
     b.disabled = false;
   });
+  // SAFETY: Keep Real button permanently disabled during v2 paper testing
+  const btnActive = document.getElementById('btn-active');
+  btnActive.disabled = true;
+  btnActive.style.opacity = '0.3';
+  btnActive.style.cursor = 'not-allowed';
+  btnActive.title = 'Disabled during v2 paper testing';
+
   if (kill_switch) {
     document.getElementById('btn-paused').classList.add('sel-paused');
   } else if (sim_mode) {
     document.getElementById('btn-sim').classList.add('sel-sim');
   } else {
-    document.getElementById('btn-active').classList.add('sel-active');
+    document.getElementById('btn-sim').classList.add('sel-sim');
   }
 }
 
 function setMode(mode) {
+  // SAFETY: Real mode disabled during v2 paper testing
+  if (mode === 'active') {
+    alert('Real mode is disabled during v2 paper testing phase.');
+    return;
+  }
   let patch;
   if (mode === 'active') patch = { kill_switch: false, sim_mode: false };
   else if (mode === 'sim') patch = { kill_switch: false, sim_mode: true };
